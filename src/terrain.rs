@@ -30,23 +30,24 @@ impl Plugin for TerrainPlugin {
 }
 
 impl TerrainLoader {
-    pub fn new(near: f32, far: f32) -> Self {
-        assert!(near > 0.0);
-        assert!(far > near + 1.0);
-        Self { near, far }
+    pub fn new(radius: f32, intermediate: f32) -> Self {
+        assert!(radius > 1.0);
+        assert!(intermediate > 1.0);
+        Self {
+            near: radius,
+            far: radius + intermediate,
+        }
     }
     fn zone(self, transform: &Transform, chunk: IVec3) -> Zone {
-        let d = transform.translation.distance(chunk_center(chunk));
-        if d > self.far {
-            return Zone::Clear;
+        match transform.translation.distance(chunk_center(chunk)) {
+            d if d < self.near => Zone::Load,
+            d if d < self.far => Zone::Keep,
+            _ => Zone::Clear,
         }
-        if d < self.near {
-            return Zone::Load;
-        }
-        Zone::Load
     }
     fn range(self) -> RangeInclusive<i32> {
-        let d = (self.far / CHUNK_WIDTH as f32) as i32 + 1;
+        let d = self.far / CHUNK_WIDTH as f32;
+        let d = d as i32 + 1;
         -d..=d
     }
 }
