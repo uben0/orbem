@@ -104,7 +104,7 @@ fn destroy_block(
     pointed: Res<PointedBlock>,
     mut modifications: ResMut<Modifications>,
 ) {
-    if let Some(at) = pointed.at {
+    if let Some((at, _)) = pointed.at {
         if button.just_pressed(MouseButton::Left) {
             modifications.push(Modify::Remove { at });
         }
@@ -113,7 +113,7 @@ fn destroy_block(
 
 #[derive(Resource)]
 struct PointedBlock {
-    at: Option<IVec3>,
+    at: Option<(IVec3, IVec3)>,
 }
 
 fn pointed_block_show(
@@ -121,7 +121,7 @@ fn pointed_block_show(
     pointed: Res<PointedBlock>,
     mut gizmos: Gizmos,
 ) {
-    if let Some(at) = pointed.at {
+    if let Some((at, side)) = pointed.at {
         gizmos.cuboid(
             Transform {
                 translation: at.as_vec3() + Vec3::ONE / 2.0 + 0.01 * (camera.rotation * Dir3::Z),
@@ -129,6 +129,14 @@ fn pointed_block_show(
                 scale: Vec3::ONE,
             },
             Color::BLACK,
+        );
+        gizmos.cuboid(
+            Transform {
+                translation: (at + side).as_vec3() + Vec3::ONE / 2.0,
+                rotation: default(),
+                scale: Vec3::ONE * 0.8,
+            },
+            Color::WHITE,
         );
     }
 }
@@ -141,11 +149,11 @@ fn pointed_block(
 ) {
     let ray = camera.rotation * -Dir3::Z;
     let traveler = RayTraveler::new(camera.translation, ray, 16.0);
-    for block in traveler {
+    for (block, dir) in traveler {
         if let Some((chunk, local)) = terrain.global_to_local(block) {
             if let Ok(blocks) = blocks.get(chunk) {
                 if blocks.get(local) {
-                    pointed.at = Some(block);
+                    pointed.at = Some((block, dir));
                     return;
                 }
             }

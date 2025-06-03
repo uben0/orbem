@@ -57,6 +57,7 @@ pub struct ChunkBlocks {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modify {
     Remove { at: IVec3 },
+    Place { at: IVec3 },
 }
 
 #[derive(Resource)]
@@ -81,11 +82,12 @@ impl Plugin for TerrainPlugin {
             .add_systems(
                 Update,
                 (
-                    chunk_generation,
-                    chunk_meshing,
                     chunk_indexer,
                     chunk_deloader,
-                    apply_modifications,
+                    chunk_generation.before(chunk_meshing),
+                    chunk_need_mesh.before(chunk_meshing),
+                    apply_modifications.before(chunk_meshing),
+                    chunk_meshing,
                 ),
             )
             .insert_resource(Terrain)
@@ -103,6 +105,9 @@ impl ChunkBlocks {
     pub fn remove(&mut self, local: IVec3) {
         self.blocks.remove(&local);
     }
+    pub fn place(&mut self, local: IVec3) {
+        self.blocks.insert(local, ());
+    }
 }
 
 const NEIGHBORS: [IVec3; 6] = [
@@ -117,28 +122,68 @@ const NEIGHBORS: [IVec3; 6] = [
 fn apply_modifications(
     mut queue: ResMut<Modifications>,
     index: Res<ChunksIndex>,
-    mut blocks: Query<&mut ChunkBlocks>,
+    mut chunks_blocks: Query<&mut ChunkBlocks>,
     mut commands: Commands,
 ) {
     for modify in std::mem::take(&mut queue.queue) {
         match modify {
             Modify::Remove { at } => {
-                if let Some((chunk, local)) = index.global_to_local(at) {
-                    if let Ok(mut blocks) = blocks.get_mut(chunk) {
-                        if blocks.get(local) {
-                            blocks.remove(local);
-
-                            for neighbor in NEIGHBORS {
-                                if let Some((neighbor, _)) = index.global_to_local(at + neighbor) {
-                                    if neighbor != chunk {
-                                        commands.entity(neighbor).insert(MeshReload);
-                                    }
-                                }
-                            }
-                            commands.entity(chunk).insert(MeshReload);
-                        }
-                    }
+                let Some((chunk, local)) = index.global_to_local(at) else {
+                    continue;
+                };
+                let Ok(mut blocks) = chunks_blocks.get_mut(chunk) else {
+                    continue;
+                };
+                if !blocks.get(local) {
+                    continue;
                 }
+                blocks.remove(local);
+
+                for neighbor in NEIGHBORS {
+                    let Some((neighbor, local)) = index.global_to_local(at + neighbor) else {
+                        continue;
+                    };
+                    if neighbor == chunk {
+                        continue;
+                    }
+                    let Ok(blocks) = chunks_blocks.get(neighbor) else {
+                        continue;
+                    };
+                    if !blocks.get(local) {
+                        continue;
+                    }
+                    commands.entity(neighbor).insert(MeshReload);
+                }
+                commands.entity(chunk).insert(MeshReload);
+            }
+            Modify::Place { at } => {
+                let Some((chunk, local)) = index.global_to_local(at) else {
+                    continue;
+                };
+                let Ok(mut blocks) = chunks_blocks.get_mut(chunk) else {
+                    continue;
+                };
+                if blocks.get(local) {
+                    continue;
+                }
+                blocks.place(local);
+
+                for neighbor in NEIGHBORS {
+                    let Some((neighbor, local)) = index.global_to_local(at + neighbor) else {
+                        continue;
+                    };
+                    if neighbor == chunk {
+                        continue;
+                    }
+                    let Ok(blocks) = chunks_blocks.get(neighbor) else {
+                        continue;
+                    };
+                    if !blocks.get(local) {
+                        continue;
+                    }
+                    commands.entity(neighbor).insert(MeshReload);
+                }
+                commands.entity(chunk).insert(MeshReload);
             }
         }
     }
@@ -238,6 +283,20 @@ impl<T> Neighborhood<T> {
     //         z_neg: f(self.z_neg),
     //     }
     // }
+    fn as_array(&self) -> [&T; 7] {
+        [
+            &self.zero,
+            &self.x_pos,
+            &self.x_neg,
+            &self.y_pos,
+            &self.y_neg,
+            &self.z_pos,
+            &self.z_neg,
+        ]
+    }
+    fn all(&self, f: impl FnMut(&T) -> bool) -> bool {
+        self.as_array().into_iter().all(f)
+    }
     fn try_map<U>(self, mut f: impl FnMut(T) -> Option<U>) -> Option<Neighborhood<U>> {
         Some(Neighborhood {
             zero: f(self.zero)?,
@@ -272,9 +331,32 @@ impl<'a> Neighborhood<&'a ChunkBlocks> {
     }
 }
 
-fn chunk_meshing(
+fn chunk_need_mesh(
     loaders: Query<(&Transform, &TerrainLoader)>,
-    not_meshed: Query<(Entity, &Chunk), Or<(Without<Mesh3d>, With<MeshReload>)>>,
+    not_meshed: Query<(Entity, &Chunk), Without<Mesh3d>>,
+    with_blocks: Query<&ChunkBlocks>,
+    index: Res<ChunksIndex>,
+    mut commands: Commands,
+) {
+    for (entity, &Chunk { chunk }) in &not_meshed {
+        if loaders
+            .iter()
+            .any(|loader| loader.inside(Zone::Mesh, chunk))
+        {
+            let Some(neighborhood) =
+                Neighborhood::from(chunk).try_map(|chunk| index.chunks.get(&chunk).copied())
+            else {
+                continue;
+            };
+            if neighborhood.all(|&chunk| with_blocks.contains(chunk)) {
+                commands.entity(entity).insert(MeshReload);
+            }
+        }
+    }
+}
+
+fn chunk_meshing(
+    not_meshed: Query<(Entity, &Chunk), With<MeshReload>>,
     with_blocks: Query<&ChunkBlocks>,
     index: Res<ChunksIndex>,
     mut commands: Commands,
@@ -282,54 +364,47 @@ fn chunk_meshing(
     assets: Res<MeshAssets>,
 ) {
     for (entity, &Chunk { chunk }) in &not_meshed {
-        if loaders
-            .iter()
-            .any(|loader| loader.inside(Zone::Mesh, chunk))
-        {
-            let Some(neighborhood) = Neighborhood::from(chunk)
-                .try_map(|chunk| with_blocks.get(*index.chunks.get(&chunk)?).ok())
-            else {
-                continue;
-            };
-
-            let mut positions = Vec::new();
-            let mut normals = Vec::new();
-            let mut indices = Vec::new();
-            for x in 0..CHUNK_WIDTH {
-                for y in 0..CHUNK_WIDTH {
-                    for z in 0..CHUNK_WIDTH {
-                        let local = IVec3 { x, y, z };
-                        if neighborhood.get(local) {
-                            make_cube_mesh(
-                                local.as_vec3(),
-                                !neighborhood.get(local + IVec3::X),
-                                !neighborhood.get(local - IVec3::X),
-                                !neighborhood.get(local + IVec3::Y),
-                                !neighborhood.get(local - IVec3::Y),
-                                !neighborhood.get(local + IVec3::Z),
-                                !neighborhood.get(local - IVec3::Z),
-                                &mut positions,
-                                &mut normals,
-                                &mut indices,
-                            );
-                        }
+        let Some(neighborhood) = Neighborhood::from(chunk)
+            .try_map(|chunk| with_blocks.get(*index.chunks.get(&chunk)?).ok())
+        else {
+            continue;
+        };
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut indices = Vec::new();
+        for x in 0..CHUNK_WIDTH {
+            for y in 0..CHUNK_WIDTH {
+                for z in 0..CHUNK_WIDTH {
+                    let local = IVec3 { x, y, z };
+                    if neighborhood.get(local) {
+                        make_cube_mesh(
+                            local.as_vec3(),
+                            !neighborhood.get(local + IVec3::X),
+                            !neighborhood.get(local - IVec3::X),
+                            !neighborhood.get(local + IVec3::Y),
+                            !neighborhood.get(local - IVec3::Y),
+                            !neighborhood.get(local + IVec3::Z),
+                            !neighborhood.get(local - IVec3::Z),
+                            &mut positions,
+                            &mut normals,
+                            &mut indices,
+                        );
                     }
                 }
             }
-            let mesh = Mesh::new(PrimitiveTopology::TriangleList, default())
-                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-                .with_inserted_indices(Indices::U32(indices));
-            let mesh = meshes.add(mesh);
-            commands
-                .entity(entity)
-                .remove::<MeshReload>()
-                .insert((Mesh3d(mesh), MeshMaterial3d(assets.material.clone())));
         }
+        let mesh = Mesh::new(PrimitiveTopology::TriangleList, default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+            .with_inserted_indices(Indices::U32(indices));
+        let mesh = meshes.add(mesh);
+        commands
+            .entity(entity)
+            .remove::<MeshReload>()
+            .insert((Mesh3d(mesh), MeshMaterial3d(assets.material.clone())));
     }
 }
 
-// impl<'a> (&'a Transform, &'a TerrainLoader) {}
 trait TerrainLoaderExt {
     fn inside(self, zone: Zone, chunk: IVec3) -> bool;
     fn outside(self, zone: Zone, chunk: IVec3) -> bool;
@@ -352,12 +427,6 @@ impl TerrainLoader {
         assert!(buffer > 1.0);
         Self { radius, buffer }
     }
-    // fn inside(self, transform: &Transform, zone: Zone, chunk: IVec3) -> bool {
-    //     zone.distance(chunk, transform.translation) <= self.radius
-    // }
-    // fn outside(self, transform: &Transform, zone: Zone, chunk: IVec3) -> bool {
-    //     zone.distance(chunk, transform.translation) > self.radius + self.buffer
-    // }
     fn range(self) -> RangeInclusive<i32> {
         let d = self.radius / CHUNK_WIDTH as f32;
         let d = d as i32 + 2;
@@ -373,7 +442,6 @@ struct MeshAssets {
 fn setup(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
     let material = materials.add(Color::srgb(0.0, 1.0, 0.0));
     commands.insert_resource(MeshAssets { material });
-    // commands.spawn((Transform::default(), Chunk { chunk: IVec3::ZERO }));
 }
 
 impl Terrain {
