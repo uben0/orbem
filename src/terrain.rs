@@ -372,26 +372,25 @@ fn chunk_meshing(
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut indices = Vec::new();
-        for x in 0..CHUNK_WIDTH {
-            for y in 0..CHUNK_WIDTH {
-                for z in 0..CHUNK_WIDTH {
-                    let local = IVec3 { x, y, z };
-                    if neighborhood.get(local) {
-                        make_cube_mesh(
-                            local.as_vec3(),
-                            !neighborhood.get(local + IVec3::X),
-                            !neighborhood.get(local - IVec3::X),
-                            !neighborhood.get(local + IVec3::Y),
-                            !neighborhood.get(local - IVec3::Y),
-                            !neighborhood.get(local + IVec3::Z),
-                            !neighborhood.get(local - IVec3::Z),
-                            &mut positions,
-                            &mut normals,
-                            &mut indices,
-                        );
-                    }
-                }
-            }
+        for (&local, &()) in &neighborhood.zero.blocks {
+            assert!(local.x >= 0);
+            assert!(local.x < CHUNK_WIDTH);
+            assert!(local.y >= 0);
+            assert!(local.y < CHUNK_WIDTH, "{}", local.y);
+            assert!(local.z >= 0);
+            assert!(local.z < CHUNK_WIDTH);
+            make_cube_mesh(
+                local.as_vec3(),
+                !neighborhood.get(local + IVec3::X),
+                !neighborhood.get(local - IVec3::X),
+                !neighborhood.get(local + IVec3::Y),
+                !neighborhood.get(local - IVec3::Y),
+                !neighborhood.get(local + IVec3::Z),
+                !neighborhood.get(local - IVec3::Z),
+                &mut positions,
+                &mut normals,
+                &mut indices,
+            );
         }
         let mesh = Mesh::new(PrimitiveTopology::TriangleList, default())
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
@@ -454,7 +453,7 @@ impl Terrain {
             for z in 0..CHUNK_WIDTH {
                 let position = CHUNK_WIDTH * chunk.xz() + IVec2::new(x, z);
                 let elevation_relative = self.elevation(position) - chunk.y * CHUNK_WIDTH;
-                for y in 0..elevation_relative {
+                for y in 0..elevation_relative.min(CHUNK_WIDTH) {
                     blocks.insert(IVec3 { x, y, z }, ());
                 }
             }

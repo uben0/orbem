@@ -2,9 +2,12 @@
 
 ## TODO
 
-- [ ] meshing by iterating on values
+- [x] meshing by iterating on values
+- [ ] capture mouse
 
 ## Ideas
+
+- Use a K-d tree to store blocks (maybe even mesh)
 
 - Add event on `loader` changing current chunk. All chunk update would only run on relevant chunks.
 
