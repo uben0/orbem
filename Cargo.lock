@@ -3165,6 +3165,7 @@ dependencies = [
 name = "orbem"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "bevy",
  "noisy_bevy",
 ]

@@ -2,6 +2,8 @@ use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*};
 use std::f32::consts::PI;
 use terrain::{TerrainLoader, TerrainPlugin};
 
+mod octahedron;
+mod ray_travel;
 mod terrain;
 
 fn main() {
@@ -21,7 +23,7 @@ fn setup(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(20.0, 20.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
-        TerrainLoader::new(60.0, 20.0),
+        TerrainLoader::new(64.0),
     ));
     commands.spawn((
         DirectionalLight::default(),
