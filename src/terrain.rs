@@ -14,6 +14,7 @@ pub struct TerrainPlugin;
 #[derive(Component, Clone, Copy)]
 pub struct TerrainLoader {
     radius: f32,
+    buffer: f32,
 }
 
 #[derive(Component)]
@@ -22,8 +23,21 @@ struct Chunk {
 }
 
 #[derive(Resource)]
-struct ChunksIndex {
+pub struct ChunksIndex {
     chunks: HashMap<IVec3, Entity>,
+}
+impl ChunksIndex {
+    pub fn get(&self, blocks: Query<&ChunkBlocks>, global: IVec3) -> Option<bool> {
+        let (chunk, local) = global_to_local(global);
+        Some(
+            blocks
+                .get(*self.chunks.get(&chunk)?)
+                .ok()?
+                .blocks
+                .get(&local)
+                .is_some(),
+        )
+    }
 }
 
 /// Store terrain generation parameters
@@ -31,7 +45,7 @@ struct ChunksIndex {
 struct Terrain;
 
 #[derive(Component)]
-struct ChunkBlocks {
+pub struct ChunkBlocks {
     blocks: HashMap<IVec3, ()>,
 }
 
@@ -40,7 +54,15 @@ const CHUNK_WIDTH: i32 = 32;
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup)
-            .add_systems(Update, (chunk_generation, chunk_meshing, chunk_indexer))
+            .add_systems(
+                Update,
+                (
+                    chunk_generation,
+                    chunk_meshing,
+                    chunk_indexer,
+                    chunk_deloader,
+                ),
+            )
             .insert_resource(Terrain)
             .insert_resource(ChunksIndex {
                 chunks: HashMap::new(),
@@ -75,6 +97,23 @@ fn chunk_indexer(
     }
 }
 
+fn chunk_deloader(
+    mut commands: Commands,
+    chunks: Query<(Entity, &Chunk), With<Mesh3d>>,
+    loaders: Query<(&Transform, &TerrainLoader)>,
+) {
+    for (entity, &Chunk { chunk }) in &chunks {
+        if loaders
+            .iter()
+            .all(|loader| loader.outside(Zone::Mesh, chunk))
+        {
+            commands
+                .entity(entity)
+                .remove::<(Mesh3d, MeshMaterial3d<StandardMaterial>)>();
+        }
+    }
+}
+
 fn chunk_generation(
     terrain: Res<Terrain>,
     loaders: Query<(&Transform, &TerrainLoader)>,
@@ -84,7 +123,7 @@ fn chunk_generation(
     for (entity, &Chunk { chunk: index }) in &chunks {
         if loaders
             .iter()
-            .any(|(transform, loader)| loader.inside(transform, Zone::Blocks, index))
+            .any(|loader| loader.inside(Zone::Blocks, index))
         {
             commands.entity(entity).insert(terrain.gen_chunk(index));
         }
@@ -171,7 +210,7 @@ fn chunk_meshing(
     for (entity, &Chunk { chunk }) in &not_meshed {
         if loaders
             .iter()
-            .any(|(transform, loader)| loader.inside(transform, Zone::Mesh, chunk))
+            .any(|loader| loader.inside(Zone::Mesh, chunk))
         {
             let Some(neighborhood) = Neighborhood::from(chunk)
                 .try_map(|chunk| with_blocks.get(*index.chunks.get(&chunk)?).ok())
@@ -215,22 +254,35 @@ fn chunk_meshing(
     }
 }
 
+// impl<'a> (&'a Transform, &'a TerrainLoader) {}
+trait TerrainLoaderExt {
+    fn inside(self, zone: Zone, chunk: IVec3) -> bool;
+    fn outside(self, zone: Zone, chunk: IVec3) -> bool;
+}
+impl<'a> TerrainLoaderExt for (&'a Transform, &'a TerrainLoader) {
+    fn inside(self, zone: Zone, chunk: IVec3) -> bool {
+        let (tr, loader) = self;
+        zone.distance(chunk, tr.translation) <= loader.radius
+    }
+
+    fn outside(self, zone: Zone, chunk: IVec3) -> bool {
+        let (tr, loader) = self;
+        zone.distance(chunk, tr.translation) > loader.radius + loader.buffer
+    }
+}
+
 impl TerrainLoader {
-    pub fn new(radius: f32) -> Self {
+    pub fn new(radius: f32, buffer: f32) -> Self {
         assert!(radius > 1.0);
-        Self { radius }
+        assert!(buffer > 1.0);
+        Self { radius, buffer }
     }
-    fn inside(self, transform: &Transform, zone: Zone, chunk: IVec3) -> bool {
-        let nearest = octahedron::nearest_any(
-            chunk_center(chunk),
-            match zone {
-                Zone::Blocks => 1.05,
-                Zone::Mesh => 0.0,
-            } * CHUNK_WIDTH as f32,
-            transform.translation,
-        );
-        transform.translation.distance(nearest) <= self.radius
-    }
+    // fn inside(self, transform: &Transform, zone: Zone, chunk: IVec3) -> bool {
+    //     zone.distance(chunk, transform.translation) <= self.radius
+    // }
+    // fn outside(self, transform: &Transform, zone: Zone, chunk: IVec3) -> bool {
+    //     zone.distance(chunk, transform.translation) > self.radius + self.buffer
+    // }
     fn range(self) -> RangeInclusive<i32> {
         let d = self.radius / CHUNK_WIDTH as f32;
         let d = d as i32 + 2;
@@ -272,6 +324,20 @@ impl Terrain {
 enum Zone {
     Blocks,
     Mesh,
+}
+impl Zone {
+    const fn level(self) -> i32 {
+        match self {
+            Zone::Blocks => 1,
+            Zone::Mesh => 0,
+        }
+    }
+    const fn reach(self) -> f32 {
+        (CHUNK_WIDTH * self.level()) as f32 * 1.05
+    }
+    fn distance(self, chunk: IVec3, point: Vec3) -> f32 {
+        octahedron::distance(chunk_center(chunk), self.reach(), point)
+    }
 }
 
 fn chunk_center(chunk: IVec3) -> Vec3 {

@@ -1,6 +1,7 @@
 use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*};
+use ray_travel::RayTraveler;
 use std::f32::consts::PI;
-use terrain::{TerrainLoader, TerrainPlugin};
+use terrain::{ChunkBlocks, ChunksIndex, TerrainLoader, TerrainPlugin};
 
 mod octahedron;
 mod ray_travel;
@@ -10,7 +11,7 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, TerrainPlugin))
         .add_systems(Startup, setup)
-        .add_systems(Update, move_camera)
+        .add_systems(Update, (move_camera, pointing_at_block))
         .run();
 }
 
@@ -22,13 +23,40 @@ fn setup(mut commands: Commands) {
     });
     commands.spawn((
         Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            fov: 100.0f32.to_radians(),
+            ..default()
+        }),
         Transform::from_xyz(20.0, 20.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
-        TerrainLoader::new(64.0),
+        TerrainLoader::new(64.0, 20.0),
     ));
     commands.spawn((
         DirectionalLight::default(),
         Transform::from_xyz(2.5, 5.0, 1.8).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+}
+
+fn pointing_at_block(
+    camera: Single<&Transform, With<Camera3d>>,
+    blocks: Query<&ChunkBlocks>,
+    terrain: Res<ChunksIndex>,
+    mut gizmos: Gizmos,
+) {
+    let ray = camera.rotation * -Dir3::Z;
+    let traveler = RayTraveler::new(camera.translation, ray, 16.0);
+    for block in traveler {
+        if terrain.get(blocks, block) == Some(true) {
+            gizmos.cuboid(
+                Transform {
+                    translation: block.as_vec3() + Vec3::ONE / 2.0 - 0.01 * ray,
+                    rotation: default(),
+                    scale: Vec3::ONE,
+                },
+                Color::BLACK,
+            );
+            break;
+        }
+    }
 }
 
 fn move_camera(
