@@ -4,6 +4,7 @@
 
 - [x] meshing by iterating on values
 - [x] capture mouse
+- [ ] place block
 
 ## Ideas
 

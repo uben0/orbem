@@ -22,7 +22,7 @@ fn main() {
                 pointed_block,
                 current_chunk_highlight,
                 pointed_block_show.after(pointed_block),
-                destroy_block.after(pointed_block),
+                block_place_or_remove.after(pointed_block),
                 window_focus,
             ),
         )
@@ -119,14 +119,16 @@ fn current_chunk_highlight(camera: Single<&Transform, With<Camera3d>>, mut gizmo
         .outer_edges();
 }
 
-fn destroy_block(
+fn block_place_or_remove(
     button: Res<ButtonInput<MouseButton>>,
     pointed: Res<PointedBlock>,
     mut modifications: ResMut<Modifications>,
 ) {
-    if let Some((at, _)) = pointed.at {
+    if let Some((at, dir)) = pointed.at {
         if button.just_pressed(MouseButton::Left) {
             modifications.push(Modify::Remove { at });
+        } else if button.just_pressed(MouseButton::Right) {
+            modifications.push(Modify::Place { at: at + dir });
         }
     }
 }
@@ -189,7 +191,7 @@ fn move_camera(
     time: Res<Time>,
 ) {
     const ROTATION_SENSITIVITY: f32 = 0.2;
-    const TRANSLATION_SENSITIVITY: f32 = 20.0;
+    const TRANSLATION_SENSITIVITY: f32 = 10.0;
 
     let (yaw, pitch, _) = camera.rotation.to_euler(default());
     let aligned = Quat::from_euler(EulerRot::default(), yaw, 0.0, 0.0);
