@@ -3,7 +3,7 @@
 ## TODO
 
 - [x] meshing by iterating on values
-- [ ] capture mouse
+- [x] capture mouse
 
 ## Ideas
 
