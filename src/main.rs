@@ -1,7 +1,7 @@
 use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*};
 use ray_travel::RayTraveler;
 use std::f32::consts::PI;
-use terrain::{ChunkBlocks, ChunksIndex, TerrainLoader, TerrainPlugin};
+use terrain::{ChunkBlocks, ChunksIndex, Modifications, Modify, TerrainLoader, TerrainPlugin};
 
 mod octahedron;
 mod ray_travel;
@@ -11,7 +11,17 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, TerrainPlugin))
         .add_systems(Startup, setup)
-        .add_systems(Update, (move_camera, pointing_at_block))
+        .add_systems(
+            Update,
+            (
+                move_camera,
+                pointed_block,
+                current_chunk_highlight,
+                pointed_block_show.after(pointed_block),
+                destroy_block.after(pointed_block),
+            ),
+        )
+        .insert_resource(PointedBlock { at: None })
         .run();
 }
 
@@ -36,27 +46,112 @@ fn setup(mut commands: Commands) {
     ));
 }
 
-fn pointing_at_block(
+fn current_chunk_highlight(camera: Single<&Transform, With<Camera3d>>, mut gizmos: Gizmos) {
+    let camera = camera.translation.round().as_ivec3();
+    let (chunk, _) = terrain::global_to_local(camera);
+    let center: Vec3A = terrain::chunk_center(chunk).into();
+    let color = Color::srgb(0.3, 0.5, 0.7);
+    let cells = UVec2::splat(32);
+    let size = Vec2::splat(1.0);
+    gizmos
+        .grid(
+            Isometry3d {
+                rotation: default(),
+                translation: center + terrain::CHUNK_WIDTH as f32 / 2.0 * -Vec3A::Z,
+            },
+            cells,
+            size,
+            color,
+        )
+        .outer_edges();
+    gizmos
+        .grid(
+            Isometry3d {
+                rotation: default(),
+                translation: center + terrain::CHUNK_WIDTH as f32 / 2.0 * Vec3A::Z,
+            },
+            cells,
+            size,
+            color,
+        )
+        .outer_edges();
+    gizmos
+        .grid(
+            Isometry3d {
+                rotation: Quat::from_rotation_y(PI / 2.0),
+                translation: center + terrain::CHUNK_WIDTH as f32 / 2.0 * -Vec3A::X,
+            },
+            cells,
+            size,
+            color,
+        )
+        .outer_edges();
+    gizmos
+        .grid(
+            Isometry3d {
+                rotation: Quat::from_rotation_y(PI / 2.0),
+                translation: center + terrain::CHUNK_WIDTH as f32 / 2.0 * Vec3A::X,
+            },
+            cells,
+            size,
+            color,
+        )
+        .outer_edges();
+}
+
+fn destroy_block(
+    button: Res<ButtonInput<MouseButton>>,
+    pointed: Res<PointedBlock>,
+    mut modifications: ResMut<Modifications>,
+) {
+    if let Some(at) = pointed.at {
+        if button.just_pressed(MouseButton::Left) {
+            modifications.push(Modify::Remove { at });
+        }
+    }
+}
+
+#[derive(Resource)]
+struct PointedBlock {
+    at: Option<IVec3>,
+}
+
+fn pointed_block_show(
+    camera: Single<&Transform, With<Camera3d>>,
+    pointed: Res<PointedBlock>,
+    mut gizmos: Gizmos,
+) {
+    if let Some(at) = pointed.at {
+        gizmos.cuboid(
+            Transform {
+                translation: at.as_vec3() + Vec3::ONE / 2.0 + 0.01 * (camera.rotation * Dir3::Z),
+                rotation: default(),
+                scale: Vec3::ONE,
+            },
+            Color::BLACK,
+        );
+    }
+}
+
+fn pointed_block(
     camera: Single<&Transform, With<Camera3d>>,
     blocks: Query<&ChunkBlocks>,
     terrain: Res<ChunksIndex>,
-    mut gizmos: Gizmos,
+    mut pointed: ResMut<PointedBlock>,
 ) {
     let ray = camera.rotation * -Dir3::Z;
     let traveler = RayTraveler::new(camera.translation, ray, 16.0);
     for block in traveler {
-        if terrain.get(blocks, block) == Some(true) {
-            gizmos.cuboid(
-                Transform {
-                    translation: block.as_vec3() + Vec3::ONE / 2.0 - 0.01 * ray,
-                    rotation: default(),
-                    scale: Vec3::ONE,
-                },
-                Color::BLACK,
-            );
-            break;
+        if let Some((chunk, local)) = terrain.global_to_local(block) {
+            if let Ok(blocks) = blocks.get(chunk) {
+                if blocks.get(local) {
+                    pointed.at = Some(block);
+                    return;
+                }
+            }
         }
     }
+    pointed.at = None;
 }
 
 fn move_camera(

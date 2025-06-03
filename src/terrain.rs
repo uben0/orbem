@@ -27,17 +27,22 @@ pub struct ChunksIndex {
     chunks: HashMap<IVec3, Entity>,
 }
 impl ChunksIndex {
-    pub fn get(&self, blocks: Query<&ChunkBlocks>, global: IVec3) -> Option<bool> {
+    pub fn global_to_local(&self, global: IVec3) -> Option<(Entity, IVec3)> {
         let (chunk, local) = global_to_local(global);
-        Some(
-            blocks
-                .get(*self.chunks.get(&chunk)?)
-                .ok()?
-                .blocks
-                .get(&local)
-                .is_some(),
-        )
+        Some((*self.chunks.get(&chunk)?, local))
     }
+    // pub fn global_to_local_neighborhood(
+    //     &self,
+    //     global: IVec3,
+    // ) -> Option<(Neighborhood<Entity>, IVec3)> {
+    //     let (chunk, local) = global_to_local(global);
+    //     Some((
+    //         Neighborhood::from(chunk)
+    //             .try_map(|chunk| self.chunks.get(&chunk))?
+    //             .map(|chunk| *chunk),
+    //         local,
+    //     ))
+    // }
 }
 
 /// Store terrain generation parameters
@@ -49,7 +54,26 @@ pub struct ChunkBlocks {
     blocks: HashMap<IVec3, ()>,
 }
 
-const CHUNK_WIDTH: i32 = 32;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modify {
+    Remove { at: IVec3 },
+}
+
+#[derive(Resource)]
+pub struct Modifications {
+    queue: Vec<Modify>,
+}
+
+#[derive(Component)]
+struct MeshReload;
+
+impl Modifications {
+    pub fn push(&mut self, modify: Modify) {
+        self.queue.push(modify);
+    }
+}
+
+pub const CHUNK_WIDTH: i32 = 32;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
@@ -61,12 +85,62 @@ impl Plugin for TerrainPlugin {
                     chunk_meshing,
                     chunk_indexer,
                     chunk_deloader,
+                    apply_modifications,
                 ),
             )
             .insert_resource(Terrain)
+            .insert_resource(Modifications { queue: Vec::new() })
             .insert_resource(ChunksIndex {
                 chunks: HashMap::new(),
             });
+    }
+}
+
+impl ChunkBlocks {
+    pub fn get(&self, local: IVec3) -> bool {
+        self.blocks.contains_key(&local)
+    }
+    pub fn remove(&mut self, local: IVec3) {
+        self.blocks.remove(&local);
+    }
+}
+
+const NEIGHBORS: [IVec3; 6] = [
+    IVec3 { x: 1, y: 0, z: 0 },
+    IVec3 { x: -1, y: 0, z: 0 },
+    IVec3 { y: 1, x: 0, z: 0 },
+    IVec3 { y: -1, x: 0, z: 0 },
+    IVec3 { z: 1, x: 0, y: 0 },
+    IVec3 { z: -1, x: 0, y: 0 },
+];
+
+fn apply_modifications(
+    mut queue: ResMut<Modifications>,
+    index: Res<ChunksIndex>,
+    mut blocks: Query<&mut ChunkBlocks>,
+    mut commands: Commands,
+) {
+    for modify in std::mem::take(&mut queue.queue) {
+        match modify {
+            Modify::Remove { at } => {
+                if let Some((chunk, local)) = index.global_to_local(at) {
+                    if let Ok(mut blocks) = blocks.get_mut(chunk) {
+                        if blocks.get(local) {
+                            blocks.remove(local);
+
+                            for neighbor in NEIGHBORS {
+                                if let Some((neighbor, _)) = index.global_to_local(at + neighbor) {
+                                    if neighbor != chunk {
+                                        commands.entity(neighbor).insert(MeshReload);
+                                    }
+                                }
+                            }
+                            commands.entity(chunk).insert(MeshReload);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -200,7 +274,7 @@ impl<'a> Neighborhood<&'a ChunkBlocks> {
 
 fn chunk_meshing(
     loaders: Query<(&Transform, &TerrainLoader)>,
-    not_meshed: Query<(Entity, &Chunk), Without<Mesh3d>>,
+    not_meshed: Query<(Entity, &Chunk), Or<(Without<Mesh3d>, With<MeshReload>)>>,
     with_blocks: Query<&ChunkBlocks>,
     index: Res<ChunksIndex>,
     mut commands: Commands,
@@ -249,6 +323,7 @@ fn chunk_meshing(
             let mesh = meshes.add(mesh);
             commands
                 .entity(entity)
+                .remove::<MeshReload>()
                 .insert((Mesh3d(mesh), MeshMaterial3d(assets.material.clone())));
         }
     }
@@ -340,14 +415,15 @@ impl Zone {
     }
 }
 
-fn chunk_center(chunk: IVec3) -> Vec3 {
+pub fn chunk_center(chunk: IVec3) -> Vec3 {
     (CHUNK_WIDTH * chunk).as_vec3() + Vec3::splat(CHUNK_WIDTH as f32 / 2.0)
 }
 
+#[allow(dead_code)]
 fn local_to_global(chunk: IVec3, local: IVec3) -> IVec3 {
     chunk * CHUNK_WIDTH + local
 }
-fn global_to_local(global: IVec3) -> (IVec3, IVec3) {
+pub fn global_to_local(global: IVec3) -> (IVec3, IVec3) {
     let width = IVec3::splat(CHUNK_WIDTH);
     (global.div_euclid(width), global.rem_euclid(width))
 }
