@@ -1,4 +1,8 @@
-use bevy::{input::mouse::MouseMotion, prelude::*};
+use bevy::{
+    input::mouse::MouseMotion,
+    prelude::*,
+    window::{CursorGrabMode, WindowFocused},
+};
 
 #[derive(SystemSet, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct ControllerFetch;
@@ -29,8 +33,27 @@ impl Plugin for ControllerPlugin {
         // .add_event::<ControllerEvent>()
         .add_systems(
             Update,
-            (keyboard_input, mouse_input).in_set(ControllerFetch),
-        );
+            (window_focus, keyboard_input, mouse_input).in_set(ControllerFetch),
+        )
+        .add_systems(Startup, setup);
+    }
+}
+
+fn setup(mut window: Single<&mut Window>) {
+    window.cursor_options.grab_mode = CursorGrabMode::Locked;
+    window.cursor_options.visible = false;
+}
+
+fn window_focus(mut events: EventReader<WindowFocused>, mut windows: Query<&mut Window>) {
+    for event in events.read() {
+        let mut window = windows.get_mut(event.window).unwrap();
+        if event.focused {
+            window.cursor_options.grab_mode = CursorGrabMode::Locked;
+            window.cursor_options.visible = false;
+        } else {
+            window.cursor_options.grab_mode = CursorGrabMode::None;
+            window.cursor_options.visible = true;
+        }
     }
 }
 

@@ -2,9 +2,12 @@
 
 ## TODO
 
+- [ ] physics
+  - [ ] gizmos
+- [x] fix delay
 - [x] meshing by iterating on values
 - [x] capture mouse
-- [ ] place block
+- [x] place block
 
 ## Ideas
 

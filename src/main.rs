@@ -3,10 +3,7 @@ mod octahedron;
 mod ray_travel;
 mod terrain;
 
-use bevy::{
-    prelude::*,
-    window::{CursorGrabMode, WindowFocused},
-};
+use bevy::prelude::*;
 use bevy_framepace::FramepacePlugin;
 use controller::{ControllerFetch, ControllerPlugin, ControllerState};
 use ray_travel::RayTraveler;
@@ -30,35 +27,18 @@ fn main() {
                 current_chunk_highlight,
                 pointed_block_show.after(pointed_block),
                 block_place_or_remove.after(pointed_block),
-                window_focus,
             ),
         )
         .insert_resource(PointedBlock { at: None })
         .run();
 }
 
-fn window_focus(mut events: EventReader<WindowFocused>, mut windows: Query<&mut Window>) {
-    for event in events.read() {
-        let mut window = windows.get_mut(event.window).unwrap();
-        if event.focused {
-            window.cursor_options.grab_mode = CursorGrabMode::Locked;
-            window.cursor_options.visible = false;
-        } else {
-            window.cursor_options.grab_mode = CursorGrabMode::None;
-            window.cursor_options.visible = true;
-        }
-    }
-}
-
 fn setup(
     mut commands: Commands,
-    mut window: Single<&mut Window>,
     // mut framepace: ResMut<FramepaceSettings>,
 ) {
     // window.present_mode = PresentMode::AutoNoVsync;
     // framepace.limiter = Limiter::from_framerate(120.0);
-    window.cursor_options.grab_mode = CursorGrabMode::Locked;
-    window.cursor_options.visible = false;
     commands.insert_resource(AmbientLight {
         color: Color::srgb(0.8, 0.9, 1.0),
         brightness: 1000.0,
