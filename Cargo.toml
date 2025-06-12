@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 arrayvec = "0.7.6"
 bevy = "0.16.0"
+bevy_framepace = "0.19.1"
 noisy_bevy = "0.10.0"
 
 [profile.dev]

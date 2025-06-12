@@ -1,24 +1,31 @@
-use bevy::{
-    input::mouse::AccumulatedMouseMotion,
-    prelude::*,
-    window::{CursorGrabMode, WindowFocused},
-};
-use ray_travel::RayTraveler;
-use std::f32::consts::PI;
-use terrain::{ChunkBlocks, ChunksIndex, Modifications, Modify, TerrainLoader, TerrainPlugin};
-
+mod controller;
 mod octahedron;
 mod ray_travel;
 mod terrain;
 
+use bevy::{
+    prelude::*,
+    window::{CursorGrabMode, WindowFocused},
+};
+use bevy_framepace::FramepacePlugin;
+use controller::{ControllerFetch, ControllerPlugin, ControllerState};
+use ray_travel::RayTraveler;
+use std::f32::consts::PI;
+use terrain::{ChunkBlocks, ChunksIndex, Modifications, Modify, TerrainLoader, TerrainPlugin};
+
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, TerrainPlugin))
+        .add_plugins((
+            DefaultPlugins,
+            TerrainPlugin,
+            ControllerPlugin,
+            FramepacePlugin,
+        ))
         .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
-                move_camera,
+                move_camera.after(ControllerFetch),
                 pointed_block,
                 current_chunk_highlight,
                 pointed_block_show.after(pointed_block),
@@ -43,7 +50,13 @@ fn window_focus(mut events: EventReader<WindowFocused>, mut windows: Query<&mut 
     }
 }
 
-fn setup(mut commands: Commands, mut window: Single<&mut Window>) {
+fn setup(
+    mut commands: Commands,
+    mut window: Single<&mut Window>,
+    // mut framepace: ResMut<FramepaceSettings>,
+) {
+    // window.present_mode = PresentMode::AutoNoVsync;
+    // framepace.limiter = Limiter::from_framerate(120.0);
     window.cursor_options.grab_mode = CursorGrabMode::Locked;
     window.cursor_options.visible = false;
     commands.insert_resource(AmbientLight {
@@ -186,43 +199,24 @@ fn pointed_block(
 
 fn move_camera(
     mut camera: Single<&mut Transform, With<Camera3d>>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<AccumulatedMouseMotion>,
+    controller_state: Res<ControllerState>,
     time: Res<Time>,
 ) {
     const ROTATION_SENSITIVITY: f32 = 0.2;
-    const TRANSLATION_SENSITIVITY: f32 = 10.0;
+    const TRANSLATION_SENSITIVITY: f32 = 40.0;
 
     let (yaw, pitch, _) = camera.rotation.to_euler(default());
     let aligned = Quat::from_euler(EulerRot::default(), yaw, 0.0, 0.0);
-    let mut dir = Vec3::ZERO;
-    if keys.pressed(KeyCode::KeyE) {
-        dir -= aligned.mul_vec3(Vec3::Z);
-    }
-    if keys.pressed(KeyCode::KeyD) {
-        dir += aligned.mul_vec3(Vec3::Z);
-    }
-    if keys.pressed(KeyCode::KeyF) {
-        dir += aligned.mul_vec3(Vec3::X);
-    }
-    if keys.pressed(KeyCode::KeyS) {
-        dir -= aligned.mul_vec3(Vec3::X);
-    }
-    if keys.pressed(KeyCode::Space) {
-        dir += Vec3::Y;
-    }
-    if keys.pressed(KeyCode::KeyZ) {
-        dir -= Vec3::Y;
-    }
-    let delta = ROTATION_SENSITIVITY * time.delta_secs() * mouse.delta;
-    let pitch = pitch - delta.y;
-    let yaw = yaw - delta.x;
 
-    camera.translation += TRANSLATION_SENSITIVITY * time.delta_secs() * dir.normalize_or_zero();
+    let delta =
+        vec2(yaw, pitch) - ROTATION_SENSITIVITY * time.delta_secs() * controller_state.mouse;
+
+    camera.translation +=
+        aligned * TRANSLATION_SENSITIVITY * time.delta_secs() * controller_state.linear_3d;
     camera.rotation = Quat::from_euler(
         EulerRot::default(),
-        yaw.rem_euclid(2.0 * PI),
-        pitch.clamp(-PI / 2.0, PI / 2.0),
+        delta.x.rem_euclid(2.0 * PI),
+        delta.y.clamp(-PI / 2.0, PI / 2.0),
         0.0,
     );
 }
