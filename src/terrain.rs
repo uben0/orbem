@@ -31,6 +31,15 @@ impl ChunksIndex {
         let (chunk, local) = global_to_local(global);
         Some((*self.chunks.get(&chunk)?, local))
     }
+    pub fn get(&self, blocks: Query<&ChunkBlocks>, global: IVec3) -> bool {
+        let Some((chunk, local)) = self.global_to_local(global) else {
+            return false;
+        };
+        let Ok(blocks) = blocks.get(chunk) else {
+            return false;
+        };
+        blocks.get(local)
+    }
     // pub fn global_to_local_neighborhood(
     //     &self,
     //     global: IVec3,

@@ -15,6 +15,7 @@ pub struct RayTraveler {
     limit: f32,
     origin: Vec3,
     ray: Dir3,
+    at: IVec3,
 }
 
 impl RayTraveler {
@@ -30,13 +31,13 @@ impl RayTraveler {
                 Ordering::Less => Some(AxisTraveler {
                     next: (origin - origin.floor()) / ray.abs(),
                     step: 1.0 / ray.abs(),
-                    dir,
+                    dir: -dir,
                 }),
                 Ordering::Equal => None,
                 Ordering::Greater => Some(AxisTraveler {
-                    next: (origin.ceil() - origin) / ray.abs(),
+                    next: ((origin + 1.0).floor() - origin) / ray.abs(),
                     step: 1.0 / ray.abs(),
-                    dir: -dir,
+                    dir,
                 }),
             })
             .collect(),
@@ -44,15 +45,23 @@ impl RayTraveler {
             limit,
             origin,
             ray,
+            at: origin.floor().as_ivec3(),
         }
     }
 }
 
+pub struct Step {
+    pub dir: IVec3,
+    pub from: IVec3,
+    pub to: IVec3,
+    pub at: Vec3,
+    pub time: f32,
+}
+
 impl Iterator for RayTraveler {
-    type Item = (IVec3, IVec3);
+    type Item = Step;
 
     fn next(&mut self) -> Option<Self::Item> {
-        const EPSILON: f32 = 1e-4;
         if self.time > self.limit {
             return None;
         }
@@ -61,10 +70,19 @@ impl Iterator for RayTraveler {
             .iter_mut()
             .min_by(|lhs, rhs| lhs.next.partial_cmp(&rhs.next).unwrap())?;
         self.time = axis_traveler.next;
+        if self.time > self.limit {
+            return None;
+        }
+
         axis_traveler.next += axis_traveler.step;
-        Some((
-            (self.origin + (self.time + EPSILON) * self.ray).as_ivec3(),
-            axis_traveler.dir,
-        ))
+        let current = self.at;
+        self.at += axis_traveler.dir;
+        Some(Step {
+            dir: axis_traveler.dir,
+            from: current,
+            to: self.at,
+            at: self.origin + self.ray * self.time,
+            time: self.time,
+        })
     }
 }

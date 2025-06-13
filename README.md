@@ -3,7 +3,8 @@
 ## TODO
 
 - [ ] physics
-  - [ ] gizmos
+  - [x] gizmos
+    - [x] second camera
 - [x] fix delay
 - [x] meshing by iterating on values
 - [x] capture mouse
