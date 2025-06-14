@@ -17,10 +17,6 @@ pub struct ControllerState {
     pub mouse: Vec2,
     pub sprint: bool,
 }
-// #[derive(Event)]
-// pub enum ControllerEvent {
-//     Rotation(Vec2),
-// }
 
 impl Plugin for ControllerPlugin {
     fn build(&self, app: &mut App) {
@@ -32,7 +28,6 @@ impl Plugin for ControllerPlugin {
             sprint: false,
             mouse: Vec2::ZERO,
         })
-        // .add_event::<ControllerEvent>()
         .add_systems(
             Update,
             (window_focus, keyboard_input, mouse_input).in_set(ControllerFetch),
