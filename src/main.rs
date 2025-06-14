@@ -22,15 +22,15 @@ fn main() {
         .add_systems(
             Update,
             (
-                move_camera.after(ControllerFetch),
+                // move_camera.after(ControllerFetch),
                 pointed_block,
-                current_chunk_highlight,
-                pointed_block_show.after(pointed_block),
+                // current_chunk_highlight,
+                // pointed_block_show.after(pointed_block),
                 block_place_or_remove.after(pointed_block),
-                show_collider,
-                move_collider,
+                (show_collider, damp_velocity, apply_gravity, move_camera)
+                    .chain()
+                    .after(ControllerFetch),
                 axis_overlay,
-                apply_gravity,
             ),
         )
         .insert_gizmo_config(
@@ -55,6 +55,7 @@ struct AxisOverlay;
 #[derive(Component)]
 struct Collider {
     size: Vec3,
+    anchor: Vec3,
 }
 
 #[derive(Component)]
@@ -94,13 +95,14 @@ fn setup(
         RenderLayers::layer(1),
     ));
     commands.spawn((
-        MainCamera,
-        Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection {
-            fov: 100.0f32.to_radians(),
-            ..default()
-        }),
-        Transform::from_xyz(20.0, 20.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(13.0, 10.0, 11.0).looking_at(
+            Vec3 {
+                x: 15.0,
+                y: 10.0,
+                z: 12.0,
+            },
+            Vec3::Y,
+        ),
         TerrainLoader::new(64.0, 20.0),
     ));
     commands.spawn((
@@ -108,9 +110,16 @@ fn setup(
         Transform::from_xyz(2.5, 5.0, 1.8).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.spawn((
-        Transform::from_xyz(10.0, 30.0, 10.0),
+        MainCamera,
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            fov: 100.0f32.to_radians(),
+            ..default()
+        }),
+        Transform::from_xyz(14.0, 13.5, 12.0),
         Collider {
             size: vec3(0.8, 1.9, 0.8),
+            anchor: vec3(0.4, 1.7, 0.4),
         },
         Velocity {
             linear: vec3(1.9, 0.0, 0.3),
@@ -183,10 +192,23 @@ impl std::ops::Mul<IVec3> for DimSwap {
         }
     }
 }
+impl std::ops::Mul<Dir3> for DimSwap {
+    type Output = Dir3;
 
-fn apply_gravity(velocity: Query<&mut Velocity, With<Collider>>) {
+    fn mul(self, rhs: Dir3) -> Self::Output {
+        match self {
+            DimSwap::XX => rhs.xyz().try_into().unwrap(),
+            DimSwap::XY => rhs.yxz().try_into().unwrap(),
+            DimSwap::XZ => rhs.zyx().try_into().unwrap(),
+        }
+    }
+}
+
+// const PHYSICS_STEP: f32 = 0.1;
+
+fn apply_gravity(velocity: Query<&mut Velocity, With<Collider>>, time: Res<Time>) {
     for mut velocity in velocity {
-        velocity.linear += Vec3::NEG_Y * 9.81;
+        velocity.linear += Vec3::NEG_Y * 40.0 * time.delta_secs();
     }
 }
 
@@ -194,120 +216,131 @@ fn show_collider(
     mut gizmos: Gizmos,
     chunks: Res<ChunksIndex>,
     blocks: Query<&ChunkBlocks>,
-    collider: Single<(&mut Transform, &Collider, &mut Velocity)>,
+    collider: Single<(Entity, &mut Transform, &Collider, &mut Velocity)>,
     time: Res<Time>,
+    mut commands: Commands,
 ) {
-    let (mut tr, cl, mut vl) = collider.into_inner();
+    let (entity, mut tr, cl, mut vl) = collider.into_inner();
 
-    let a = [
+    let corner_relative: Vec3 = [
         (vl.linear.x, cl.size.x),
         (vl.linear.y, cl.size.y),
         (vl.linear.z, cl.size.z),
-    ];
-    let b: Vec3 = a
-        .map(|(linear, size)| if linear < 0.0 { 0.0 } else { size })
-        .into();
+    ]
+    .map(|(linear, size)| if linear < 0.0 { 0.0 } else { size })
+    .into();
+    let corner_low = tr.translation - cl.anchor;
+    let corner_active = corner_low + corner_relative;
+
+    // let a = [
+    //     (vl.linear.x, cl.size.x),
+    //     (vl.linear.y, cl.size.y),
+    //     (vl.linear.z, cl.size.z),
+    // ];
+    // let b: Vec3 = a
+    //     .map(|(linear, size)| if linear < 0.0 { 0.0 } else { size })
+    //     .into();
 
     let keyframe = time.elapsed_secs().rem_euclid(1.0);
-    gizmos.rect(tr.translation, cl.size, Color::srgb(1.0, 0.3, 0.2));
-    gizmos.rect(
-        tr.translation + vl.linear * keyframe,
-        cl.size,
-        Color::srgb(1.0, 0.5, 0.0),
-    );
-    gizmos.line(
-        tr.translation + b,
-        tr.translation + b + vl.linear,
-        Color::srgb(1.0, 0.5, 0.0),
-    );
-
-    // let a: [f32; 3] = cl.linear.into();
-    // let a = a.map(|scalar| if scalar < 0.0 { Side::Neg } else { Side::Pos });
-    // a.map(|side| match side {
-    //     Side::Pos => todo!(),
-    //     Side::Neg => todo!(),
-    // });
 
     let mut shift = vl.linear * time.delta_secs();
     let mut new_vl = vl.linear;
 
-    // let mut i = 0;
+    let shift_before = shift;
+
+    gizmos.rect(corner_low, cl.size, Color::srgb(1.0, 0.3, 0.2));
+    gizmos.rect(
+        corner_low + shift * keyframe,
+        cl.size,
+        Color::srgb(1.0, 0.5, 0.0),
+    );
+    gizmos.line(
+        corner_active,
+        corner_active + shift,
+        Color::srgb(1.0, 0.5, 0.0),
+    );
+
+    let mut grounded = false;
     'search: while let Ok(dir) = shift.try_into() {
-        // i += 1;
-        // println!("{:?}, {}", shift, i);
-        for step in RayTraveler::new(tr.translation + b, dir, shift.norm()) {
+        for step in RayTraveler::new(corner_active, dir, shift.norm()) {
             let (swap, color) = match step.dir {
                 IVec3::X | IVec3::NEG_X => (DimSwap::XX, Color::srgb(1.0, 0.0, 0.0)),
                 IVec3::Y | IVec3::NEG_Y => (DimSwap::XY, Color::srgb(0.0, 1.0, 0.0)),
                 IVec3::Z | IVec3::NEG_Z => (DimSwap::XZ, Color::srgb(0.0, 0.0, 1.0)),
                 _ => unreachable!(),
             };
-            let collision = swap * (step.at - b);
+            let collision = swap * (step.at - corner_relative);
             let size = swap * cl.size;
             let step_to = swap * step.to;
+            let dir = swap * dir;
+
+            let mut collided = false;
             for y in collision.y.floor() as i32..=(collision.y + size.y).floor() as i32 {
                 for z in collision.z.floor() as i32..=(collision.z + size.z).floor() as i32 {
                     let selected = swap * ivec3(step_to.x, y, z);
-                    if chunks.get(blocks, selected) {
-                        let new_shift = swap * shift;
-                        let new_shift =
-                            new_shift.with_x(new_shift.x * (step.time / shift.norm() - 1e-4));
-                        shift = swap * new_shift;
-                        new_vl = swap * (swap * new_vl).with_x(0.0);
-                        continue 'search;
-                    }
-                    // println!("{}", selected);
                     gizmos.block(selected, color);
+                    if chunks.get(blocks, selected) && !collided {
+                        collided = true;
+                    }
                 }
             }
-            // match step.dir {
-            //     IVec3::X | IVec3::NEG_X => {}
-            //     _ => {}
-            // }
-            // if step.dir == IVec3::X {}
-            // let color = match step.dir {
-            //     IVec3::X | IVec3::NEG_X => Color::srgb(1.0, 0.0, 0.0),
-            //     IVec3::Y | IVec3::NEG_Y => Color::srgb(0.0, 1.0, 0.0),
-            //     IVec3::Z | IVec3::NEG_Z => Color::srgb(0.0, 0.0, 1.0),
-            //     _ => Color::WHITE,
-            // };
-            // gizmos.block(step.to, color);
+            if collided {
+                if step.dir == IVec3::NEG_Y {
+                    grounded = true;
+                }
+                let new_shift = swap * shift;
+                let factor = step.time / shift.norm();
+                let new_shift = new_shift.with_x(new_shift.x * factor - dir.x.signum() * 1e-4);
+                shift = swap * new_shift;
+
+                new_vl = swap * (swap * new_vl).with_x(0.0);
+                continue 'search;
+            }
         }
         break 'search;
     }
+
+    gizmos.rect(
+        corner_low + shift * keyframe,
+        cl.size,
+        Color::srgb(0.8, 0.0, 1.0),
+    );
+    gizmos.line(
+        corner_active,
+        corner_active + shift,
+        Color::srgb(0.8, 0.0, 1.0),
+    );
+
+    if grounded {
+        commands.entity(entity).insert_if_new(Grounded);
+    } else {
+        commands.entity(entity).remove::<Grounded>();
+    }
+
+    if chunks.get(blocks, (corner_active + shift).floor().as_ivec3()) {
+        println!("collider tunneling");
+        println!(" - pos    {:.10}", corner_active);
+        println!(" - shift  {:.10}", shift_before);
+        println!(" - shift* {:.10}", shift);
+        println!(" - pos*   {:.10}", corner_active + shift);
+        println!();
+        // commands.
+        std::process::exit(0);
+        // return;
+    }
+
     tr.translation += shift;
     vl.linear = new_vl;
 }
 
-fn move_collider(
-    keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    collider: Single<(&mut Transform, &mut Velocity), With<Collider>>,
-) {
-    let (mut tr, mut vl) = collider.into_inner();
-    const RATE: f32 = 1.0;
-    let tr = if keys.pressed(KeyCode::ControlRight) {
-        &mut vl.linear
-    } else {
-        &mut tr.translation
-    };
-    if keys.pressed(KeyCode::KeyI) {
-        tr.x += time.delta_secs() * RATE;
-    }
-    if keys.pressed(KeyCode::KeyK) {
-        tr.x -= time.delta_secs() * RATE;
-    }
-    if keys.pressed(KeyCode::KeyL) {
-        tr.z += time.delta_secs() * RATE;
-    }
-    if keys.pressed(KeyCode::KeyJ) {
-        tr.z -= time.delta_secs() * RATE;
-    }
-    if keys.pressed(KeyCode::KeyU) {
-        tr.y += time.delta_secs() * RATE;
-    }
-    if keys.pressed(KeyCode::KeyO) {
-        tr.y -= time.delta_secs() * RATE;
+#[derive(Component)]
+struct Grounded;
+
+fn damp_velocity(collider: Query<(&mut Velocity, Has<Grounded>), With<Collider>>, time: Res<Time>) {
+    for (mut velocity, grounded) in collider {
+        let rate: f32 = if grounded { 0.7 } else { 0.9 };
+        velocity.linear.x *= rate.powf(time.delta_secs() + 1.0);
+        velocity.linear.z *= rate.powf(time.delta_secs() + 1.0);
     }
 }
 
@@ -429,23 +462,60 @@ fn pointed_block(
     pointed.at = None;
 }
 
+fn move_collider(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    collider: Single<(&mut Velocity, Has<Grounded>), With<Collider>>,
+) {
+    let (mut velocity, grounded) = collider.into_inner();
+    let rate: f32 = if grounded { 40.0 } else { 2.0 };
+    if keys.pressed(KeyCode::KeyI) {
+        velocity.linear.x += time.delta_secs() * rate;
+    }
+    if keys.pressed(KeyCode::KeyK) {
+        velocity.linear.x -= time.delta_secs() * rate;
+    }
+    if keys.pressed(KeyCode::KeyL) {
+        velocity.linear.z += time.delta_secs() * rate;
+    }
+    if keys.pressed(KeyCode::KeyJ) {
+        velocity.linear.z -= time.delta_secs() * rate;
+    }
+    if grounded {
+        if keys.pressed(KeyCode::KeyU) {
+            velocity.linear.y = 10.0;
+        }
+    }
+}
+
 fn move_camera(
-    mut camera: Single<&mut Transform, With<MainCamera>>,
+    camera: Single<(&mut Transform, &mut Velocity, Has<Grounded>), With<MainCamera>>,
     controller_state: Res<ControllerState>,
     time: Res<Time>,
 ) {
     const ROTATION_SENSITIVITY: f32 = 0.2;
-    const TRANSLATION_SENSITIVITY: f32 = 20.0;
 
-    let (yaw, pitch, _) = camera.rotation.to_euler(default());
+    let (mut transform, mut velocity, grounded) = camera.into_inner();
+    let linear_force: f32 = if grounded {
+        if controller_state.sprint { 100.0 } else { 70.0 }
+    } else {
+        40.0
+    };
+    // let linear_sensi = if controller_state.sprint { 20.0 } else { 8.0 };
+
+    let (yaw, pitch, _) = transform.rotation.to_euler(default());
     let aligned = Quat::from_euler(EulerRot::default(), yaw, 0.0, 0.0);
 
     let delta =
         vec2(yaw, pitch) - ROTATION_SENSITIVITY * time.delta_secs() * controller_state.mouse;
 
-    camera.translation +=
-        aligned * TRANSLATION_SENSITIVITY * time.delta_secs() * controller_state.linear_3d;
-    camera.rotation = Quat::from_euler(
+    if grounded && controller_state.jump {
+        velocity.linear.y = 12.0;
+    }
+
+    velocity.linear += aligned * linear_force * time.delta_secs() * controller_state.linear_2d;
+    // camera.translation += aligned * linear_sensi * time.delta_secs() * controller_state.linear_3d;
+    transform.rotation = Quat::from_euler(
         EulerRot::default(),
         delta.x.rem_euclid(2.0 * PI),
         delta.y.clamp(-PI / 2.0, PI / 2.0),

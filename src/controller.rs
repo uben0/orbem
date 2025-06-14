@@ -15,6 +15,7 @@ pub struct ControllerState {
     pub jump: bool,
     pub sneak: bool,
     pub mouse: Vec2,
+    pub sprint: bool,
 }
 // #[derive(Event)]
 // pub enum ControllerEvent {
@@ -28,6 +29,7 @@ impl Plugin for ControllerPlugin {
             linear_2d: Vec3::ZERO,
             jump: false,
             sneak: false,
+            sprint: false,
             mouse: Vec2::ZERO,
         })
         // .add_event::<ControllerEvent>()
@@ -59,6 +61,9 @@ fn window_focus(mut events: EventReader<WindowFocused>, mut windows: Query<&mut 
 
 pub fn keyboard_input(keys: Res<ButtonInput<KeyCode>>, mut controller: ResMut<ControllerState>) {
     let mut dir = Vec3::ZERO;
+    controller.jump = keys.pressed(KeyCode::Space);
+    controller.sneak = keys.pressed(KeyCode::KeyZ);
+    controller.sprint = keys.pressed(KeyCode::KeyA);
     if keys.pressed(KeyCode::KeyE) {
         dir -= Vec3::Z;
     }
@@ -72,12 +77,10 @@ pub fn keyboard_input(keys: Res<ButtonInput<KeyCode>>, mut controller: ResMut<Co
         dir -= Vec3::X;
     }
     controller.linear_2d = dir.normalize_or_zero();
-    if keys.pressed(KeyCode::Space) {
-        controller.jump = true;
+    if controller.jump {
         dir += Vec3::Y;
     }
-    if keys.pressed(KeyCode::KeyZ) {
-        controller.sneak = true;
+    if controller.sneak {
         dir -= Vec3::Y;
     }
     controller.linear_3d = dir.normalize_or_zero();

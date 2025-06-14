@@ -35,7 +35,7 @@ impl RayTraveler {
                 }),
                 Ordering::Equal => None,
                 Ordering::Greater => Some(AxisTraveler {
-                    next: ((origin + 1.0).floor() - origin) / ray.abs(),
+                    next: (origin.ceil() - origin) / ray.abs(),
                     step: 1.0 / ray.abs(),
                     dir,
                 }),
