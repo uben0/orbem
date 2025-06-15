@@ -30,7 +30,7 @@ fn main() {
                 current_chunk_highlight,
                 pointed_block_show.after(pointed_block),
                 block_place_or_remove.after(pointed_block),
-                toggle_flying,
+                player_toggle_flying,
                 player_move_flying.after(ControllerFetch),
                 (player_move_physics, player_rotate)
                     .before(ApplyPhysics)
@@ -75,34 +75,13 @@ struct BlockHighligh;
 #[derive(Component)]
 struct Player;
 
-fn setup(
-    mut commands: Commands,
-    // mut framepace: ResMut<FramepaceSettings>,
-) {
-    // window.present_mode = PresentMode::AutoNoVsync;
-    // framepace.limiter = Limiter::from_framerate(120.0);
+fn setup(mut commands: Commands) {
+    commands.insert_resource(ClearColor(Color::srgb(0.7, 0.9, 1.0)));
     commands.insert_resource(AmbientLight {
         color: Color::srgb(0.8, 0.9, 1.0),
         brightness: 1000.0,
         ..default()
     });
-    commands.spawn((
-        AmbientLight {
-            color: Color::WHITE,
-            brightness: 10_000.0,
-            ..default()
-        },
-        Transform::from_xyz(0.0, 0.0, 100.0).looking_at(Vec3::ZERO, Vec3::Y),
-        Camera3d::default(),
-        Projection::Orthographic(OrthographicProjection::default_3d()),
-        Camera {
-            order: 1,
-            clear_color: ClearColorConfig::None,
-            ..default()
-        },
-        // Projection::Orthographic(OrthographicProjection::default_3d()),
-        RenderLayers::layer(1),
-    ));
     commands.spawn((
         DirectionalLight::default(),
         Transform::from_xyz(2.5, 5.0, 1.8).looking_at(Vec3::ZERO, Vec3::Y),
@@ -110,7 +89,6 @@ fn setup(
     commands.spawn((
         Player,
         TerrainLoader::new(64.0, 20.0),
-        // ControlledPhysically,
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: 100.0f32.to_radians(),
@@ -124,6 +102,17 @@ fn setup(
         Velocity {
             linear: vec3(1.9, 0.0, 0.3),
         },
+    ));
+    commands.spawn((
+        Transform::from_xyz(0.0, 0.0, 100.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Camera3d::default(),
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        RenderLayers::layer(1),
+        Projection::Orthographic(OrthographicProjection::default_3d()),
     ));
 }
 
@@ -167,18 +156,19 @@ fn axis_overlay(mut gizmos: Gizmos<AxisOverlay>, transform: Single<&Transform, W
 // #[derive(Component)]
 // struct ControlledPhysically;
 
-fn current_chunk_highlight(camera: Single<&Transform, With<Player>>, mut gizmos: Gizmos) {
-    let camera = camera.translation.floor().as_ivec3();
-    let (chunk, _) = terrain::global_to_local(camera);
+fn current_chunk_highlight(player: Single<&Transform, With<Player>>, mut gizmos: Gizmos) {
+    let global = player.translation.floor().as_ivec3();
+    let (chunk, _) = terrain::global_to_local(global);
     let center: Vec3A = terrain::chunk_center(chunk).into();
     let color = Color::srgb(0.3, 0.5, 0.7);
     let cells = UVec2::splat(32);
     let size = Vec2::splat(1.0);
+    let half_chunk = terrain::CHUNK_WIDTH as f32 / 2.0;
     gizmos
         .grid(
             Isometry3d {
                 rotation: default(),
-                translation: center + terrain::CHUNK_WIDTH as f32 / 2.0 * -Vec3A::Z,
+                translation: center + half_chunk * -Vec3A::Z,
             },
             cells,
             size,
@@ -189,7 +179,7 @@ fn current_chunk_highlight(camera: Single<&Transform, With<Player>>, mut gizmos:
         .grid(
             Isometry3d {
                 rotation: default(),
-                translation: center + terrain::CHUNK_WIDTH as f32 / 2.0 * Vec3A::Z,
+                translation: center + half_chunk * Vec3A::Z,
             },
             cells,
             size,
@@ -200,7 +190,7 @@ fn current_chunk_highlight(camera: Single<&Transform, With<Player>>, mut gizmos:
         .grid(
             Isometry3d {
                 rotation: Quat::from_rotation_y(PI / 2.0),
-                translation: center + terrain::CHUNK_WIDTH as f32 / 2.0 * -Vec3A::X,
+                translation: center + half_chunk * -Vec3A::X,
             },
             cells,
             size,
@@ -211,7 +201,7 @@ fn current_chunk_highlight(camera: Single<&Transform, With<Player>>, mut gizmos:
         .grid(
             Isometry3d {
                 rotation: Quat::from_rotation_y(PI / 2.0),
-                translation: center + terrain::CHUNK_WIDTH as f32 / 2.0 * Vec3A::X,
+                translation: center + half_chunk * Vec3A::X,
             },
             cells,
             size,
@@ -246,13 +236,13 @@ fn pointed_block_show(pointed: Res<PointedBlock>, mut gizmos: Gizmos<BlockHighli
 }
 
 fn pointed_block(
-    camera: Single<&Transform, With<Player>>,
+    player: Single<&Transform, With<Player>>,
     blocks: Query<&ChunkBlocks>,
     terrain: Res<ChunksIndex>,
     mut pointed: ResMut<PointedBlock>,
 ) {
-    let ray = camera.rotation * -Dir3::Z;
-    let traveler = RayTraveler::new(camera.translation, ray, 16.0);
+    let ray = player.rotation * -Dir3::Z;
+    let traveler = RayTraveler::new(player.translation, ray, 16.0);
     for step in traveler {
         if let Some((chunk, local)) = terrain.global_to_local(step.to) {
             if let Ok(blocks) = blocks.get(chunk) {
@@ -266,7 +256,7 @@ fn pointed_block(
     pointed.at = None;
 }
 
-fn toggle_flying(
+fn player_toggle_flying(
     mut commands: Commands,
     player: Single<(Entity, Has<Velocity>), With<Player>>,
     keys: Res<ButtonInput<KeyCode>>,

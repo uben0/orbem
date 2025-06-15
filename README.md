@@ -2,7 +2,8 @@
 
 ## TODO
 
-- [ ] physics
+- [ ] different blocks
+- [x] physics
   - [x] gizmos
     - [x] second camera
 - [x] fix delay

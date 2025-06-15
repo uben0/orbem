@@ -8,6 +8,8 @@ use std::{
     ops::RangeInclusive,
 };
 
+pub const CHUNK_WIDTH: i32 = 32;
+
 pub struct TerrainPlugin;
 
 /// An entity that causes the terrain to be loaded around it
@@ -26,6 +28,34 @@ struct Chunk {
 pub struct ChunksIndex {
     chunks: HashMap<IVec3, Entity>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Block {
+    Air,
+    Grass,
+    Stone,
+}
+
+/// Store terrain generation parameters
+#[derive(Resource)]
+struct Terrain;
+
+#[derive(Component)]
+pub struct ChunkBlocks {
+    blocks: HashMap<IVec3, Block>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modify {
+    Remove { at: IVec3 },
+    Place { at: IVec3 },
+}
+
+#[derive(Resource)]
+pub struct Modifications {
+    queue: Vec<Modify>,
+}
+
 impl ChunksIndex {
     pub fn global_to_local(&self, global: IVec3) -> Option<(Entity, IVec3)> {
         let (chunk, local) = global_to_local(global);
@@ -54,26 +84,6 @@ impl ChunksIndex {
     // }
 }
 
-/// Store terrain generation parameters
-#[derive(Resource)]
-struct Terrain;
-
-#[derive(Component)]
-pub struct ChunkBlocks {
-    blocks: HashMap<IVec3, ()>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Modify {
-    Remove { at: IVec3 },
-    Place { at: IVec3 },
-}
-
-#[derive(Resource)]
-pub struct Modifications {
-    queue: Vec<Modify>,
-}
-
 #[derive(Component)]
 struct MeshReload;
 
@@ -82,8 +92,6 @@ impl Modifications {
         self.queue.push(modify);
     }
 }
-
-pub const CHUNK_WIDTH: i32 = 32;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
@@ -114,8 +122,12 @@ impl ChunkBlocks {
     pub fn remove(&mut self, local: IVec3) {
         self.blocks.remove(&local);
     }
-    pub fn place(&mut self, local: IVec3) {
-        self.blocks.insert(local, ());
+    pub fn place(&mut self, local: IVec3, block: Block) {
+        if block == Block::Air {
+            self.blocks.remove(&local);
+        } else {
+            self.blocks.insert(local, block);
+        }
     }
 }
 
@@ -175,7 +187,7 @@ fn apply_modifications(
                 if blocks.get(local) {
                     continue;
                 }
-                blocks.place(local);
+                blocks.place(local, Block::Stone);
 
                 for neighbor in NEIGHBORS {
                     let Some((neighbor, local)) = index.global_to_local(at + neighbor) else {
@@ -381,7 +393,7 @@ fn chunk_meshing(
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut indices = Vec::new();
-        for (&local, &()) in &neighborhood.zero.blocks {
+        for (&local, &_) in &neighborhood.zero.blocks {
             assert!(local.x >= 0);
             assert!(local.x < CHUNK_WIDTH);
             assert!(local.y >= 0);
@@ -463,7 +475,7 @@ impl Terrain {
                 let position = CHUNK_WIDTH * chunk.xz() + IVec2::new(x, z);
                 let elevation_relative = self.elevation(position) - chunk.y * CHUNK_WIDTH;
                 for y in 0..elevation_relative.min(CHUNK_WIDTH) {
-                    blocks.insert(IVec3 { x, y, z }, ());
+                    blocks.insert(IVec3 { x, y, z }, Block::Grass);
                 }
             }
         }
