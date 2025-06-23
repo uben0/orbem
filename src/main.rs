@@ -5,13 +5,31 @@ mod ray_travel;
 mod swizzle;
 mod terrain;
 
-use bevy::{prelude::*, render::view::RenderLayers};
+use bevy::{
+    asset::RenderAssetUsages,
+    image::{CompressedImageFormats, ImageSampler},
+    pbr::{MaterialPipeline, MaterialPipelineKey},
+    prelude::*,
+    render::{
+        mesh::{Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology},
+        render_resource::{
+            AsBindGroup, RenderPipelineDescriptor, ShaderRef, SpecializedMeshPipelineError,
+        },
+        view::RenderLayers,
+    },
+};
 use bevy_framepace::FramepacePlugin;
 use controller::{ControllerFetch, ControllerPlugin, ControllerState};
 use physics::{ApplyPhysics, Collider, Grounded, PhysicsPlugin, Velocity};
 use ray_travel::RayTraveler;
-use std::f32::consts::PI;
+use std::{f32::consts::PI, fmt::Write};
 use terrain::{ChunkBlocks, ChunksIndex, Modifications, Modify, TerrainLoader, TerrainPlugin};
+
+const ATTRIBUTE_TEXTURE_INDEX: MeshVertexAttribute = MeshVertexAttribute::new(
+    "TextureIndex",
+    2760892297209218923,
+    bevy::render::mesh::VertexFormat::Uint32,
+);
 
 fn main() {
     App::new()
@@ -21,13 +39,16 @@ fn main() {
             ControllerPlugin,
             FramepacePlugin,
             PhysicsPlugin,
+            MaterialPlugin::<MyMaterial>::default(),
+            MaterialPlugin::<MyMaterial2>::default(),
         ))
         .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
+                inspect_ui,
                 pointed_block,
-                current_chunk_highlight,
+                // current_chunk_highlight,
                 pointed_block_show.after(pointed_block),
                 block_place_or_remove.after(pointed_block),
                 player_toggle_flying,
@@ -75,8 +96,226 @@ struct BlockHighligh;
 #[derive(Component)]
 struct Player;
 
-fn setup(mut commands: Commands) {
+fn load_texture_atlas() -> Image {
+    let bytes = std::fs::read("assets/textures/blocks.png").unwrap();
+    let mut textures = Image::from_buffer(
+        &bytes,
+        bevy::image::ImageType::Format(ImageFormat::Png),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::nearest(),
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .unwrap();
+    textures.reinterpret_stacked_2d_as_array(2);
+    textures
+}
+fn load_texture_test() -> Image {
+    let bytes = std::fs::read("assets/textures/dirt-side.png").unwrap();
+    let mut textures = Image::from_buffer(
+        &bytes,
+        bevy::image::ImageType::Format(ImageFormat::Png),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::nearest(),
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .unwrap();
+    textures
+}
+
+fn make_cube_mesh(
+    tr: Vec3,
+    x_pos: bool,
+    x_neg: bool,
+    y_pos: bool,
+    y_neg: bool,
+    z_pos: bool,
+    z_neg: bool,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+    texture_uvs: &mut Vec<[f32; 2]>,
+    texture_indices: &mut Vec<u32>,
+) {
+    if x_pos {
+        let index = positions.len() as u32;
+        positions.extend([
+            [tr.x + 1.0, tr.y + 0.0, tr.z + 0.0],
+            [tr.x + 1.0, tr.y + 0.0, tr.z + 1.0],
+            [tr.x + 1.0, tr.y + 1.0, tr.z + 0.0],
+            [tr.x + 1.0, tr.y + 1.0, tr.z + 1.0],
+        ]);
+        normals.extend([[1.0, 0.0, 0.0]; 4]);
+        indices.extend([
+            index + 0,
+            index + 2,
+            index + 1,
+            index + 1,
+            index + 2,
+            index + 3,
+        ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
+    }
+    if x_neg {
+        let index = positions.len() as u32;
+        positions.extend([
+            [tr.x + 0.0, tr.y + 0.0, tr.z + 0.0],
+            [tr.x + 0.0, tr.y + 0.0, tr.z + 1.0],
+            [tr.x + 0.0, tr.y + 1.0, tr.z + 0.0],
+            [tr.x + 0.0, tr.y + 1.0, tr.z + 1.0],
+        ]);
+        normals.extend([[-1.0, 0.0, 0.0]; 4]);
+        indices.extend([
+            index + 0,
+            index + 1,
+            index + 2,
+            index + 1,
+            index + 3,
+            index + 2,
+        ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
+    }
+    if y_pos {
+        let index = positions.len() as u32;
+        positions.extend([
+            [tr.x + 0.0, tr.y + 1.0, tr.z + 0.0],
+            [tr.x + 0.0, tr.y + 1.0, tr.z + 1.0],
+            [tr.x + 1.0, tr.y + 1.0, tr.z + 0.0],
+            [tr.x + 1.0, tr.y + 1.0, tr.z + 1.0],
+        ]);
+        normals.extend([[0.0, 1.0, 0.0]; 4]);
+        indices.extend([
+            index + 0,
+            index + 1,
+            index + 2,
+            index + 1,
+            index + 3,
+            index + 2,
+        ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
+    }
+    if y_neg {
+        let index = positions.len() as u32;
+        positions.extend([
+            [tr.x + 0.0, tr.y + 0.0, tr.z + 0.0],
+            [tr.x + 0.0, tr.y + 0.0, tr.z + 1.0],
+            [tr.x + 1.0, tr.y + 0.0, tr.z + 0.0],
+            [tr.x + 1.0, tr.y + 0.0, tr.z + 1.0],
+        ]);
+        normals.extend([[0.0, -1.0, 0.0]; 4]);
+        indices.extend([
+            index + 0,
+            index + 2,
+            index + 1,
+            index + 1,
+            index + 2,
+            index + 3,
+        ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
+    }
+    if z_pos {
+        let index = positions.len() as u32;
+        positions.extend([
+            [tr.x + 0.0, tr.y + 0.0, tr.z + 1.0],
+            [tr.x + 0.0, tr.y + 1.0, tr.z + 1.0],
+            [tr.x + 1.0, tr.y + 0.0, tr.z + 1.0],
+            [tr.x + 1.0, tr.y + 1.0, tr.z + 1.0],
+        ]);
+        normals.extend([[0.0, 0.0, 1.0]; 4]);
+        indices.extend([
+            index + 0,
+            index + 2,
+            index + 1,
+            index + 1,
+            index + 2,
+            index + 3,
+        ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
+    }
+    if z_neg {
+        let index = positions.len() as u32;
+        positions.extend([
+            [tr.x + 0.0, tr.y + 0.0, tr.z + 0.0],
+            [tr.x + 0.0, tr.y + 1.0, tr.z + 0.0],
+            [tr.x + 1.0, tr.y + 0.0, tr.z + 0.0],
+            [tr.x + 1.0, tr.y + 1.0, tr.z + 0.0],
+        ]);
+        normals.extend([[0.0, 0.0, -1.0]; 4]);
+        indices.extend([
+            index + 0,
+            index + 1,
+            index + 2,
+            index + 1,
+            index + 3,
+            index + 2,
+        ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
+    }
+}
+
+fn create_test_mesh() -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+    let mut texture_uvs = Vec::new();
+    let mut texture_indices = Vec::new();
+    make_cube_mesh(
+        Vec3::ZERO,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        &mut positions,
+        &mut normals,
+        &mut indices,
+        &mut texture_uvs,
+        &mut texture_indices,
+    );
+    Mesh::new(PrimitiveTopology::TriangleList, default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, texture_uvs)
+        .with_inserted_attribute(ATTRIBUTE_TEXTURE_INDEX, texture_indices)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_indices(Indices::U32(indices))
+}
+
+fn setup(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<MyMaterial>>,
+    mut materials2: ResMut<Assets<StandardMaterial>>,
+    mut materials3: ResMut<Assets<MyMaterial2>>,
+) {
     commands.insert_resource(ClearColor(Color::srgb(0.7, 0.9, 1.0)));
+    commands.spawn((
+        Transform::from_xyz(0.0, 16.0, 4.0),
+        Mesh3d(meshes.add(create_test_mesh())),
+        MeshMaterial3d(materials.add(MyMaterial {
+            texture: images.add(load_texture_atlas()),
+        })),
+    ));
+    commands.spawn((
+        Transform::from_xyz(0.0, 16.0, 2.0),
+        Mesh3d(meshes.add(create_test_mesh())),
+        MeshMaterial3d(materials3.add(MyMaterial2 {
+            texture: images.add(load_texture_test()),
+        })),
+    ));
+    commands.spawn((
+        Transform::from_xyz(0.0, 16.0, 0.0),
+        Mesh3d(meshes.add(create_test_mesh())),
+        MeshMaterial3d(materials2.add(images.add(load_texture_test()))),
+    ));
     commands.insert_resource(AmbientLight {
         color: Color::srgb(0.8, 0.9, 1.0),
         brightness: 1000.0,
@@ -94,13 +333,10 @@ fn setup(mut commands: Commands) {
             fov: 100.0f32.to_radians(),
             ..default()
         }),
-        Transform::from_xyz(14.0, 13.5, 12.0),
+        Transform::from_xyz(2.0, 18.0, 1.0).looking_at(vec3(0.0, 18.0, 0.0), Vec3::Y),
         Collider {
             size: vec3(0.8, 1.9, 0.8),
             anchor: vec3(0.4, 1.7, 0.4),
-        },
-        Velocity {
-            linear: vec3(1.9, 0.0, 0.3),
         },
     ));
     commands.spawn((
@@ -114,6 +350,89 @@ fn setup(mut commands: Commands) {
         RenderLayers::layer(1),
         Projection::Orthographic(OrthographicProjection::default_3d()),
     ));
+    let font = TextFont {
+        font_size: 12.0,
+        ..default()
+    };
+    commands.spawn((
+        Node {
+            top: Val::Px(5.0),
+            left: Val::Px(5.0),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(Val::Px(5.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.4)),
+        children![
+            (Text("x:".to_string()), font.clone()),
+            (Text("y:".to_string()), font.clone()),
+            (Text("z:".to_string()), font.clone()),
+        ],
+        InspectUi,
+    ));
+}
+
+#[derive(Component)]
+struct InspectUi;
+
+fn inspect_ui(
+    mut texts: Query<&mut Text>,
+    root: Single<(Entity, &Children), With<InspectUi>>,
+    player: Single<&Transform, With<Player>>,
+) {
+    let (_, children) = root.into_inner();
+
+    for (axis, child, value) in [
+        ("x", 0, player.translation.x),
+        ("y", 1, player.translation.y),
+        ("z", 2, player.translation.z),
+    ] {
+        let text = &mut texts.get_mut(children[child]).unwrap().0;
+        text.clear();
+        write!(text, "{}: {:>+8.3}", axis, value).unwrap();
+    }
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct MyMaterial {
+    #[texture(0, dimension = "2d_array")]
+    #[sampler(1)]
+    texture: Handle<Image>,
+}
+impl Material for MyMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/my_material.wgsl".into()
+    }
+    fn vertex_shader() -> ShaderRef {
+        "shaders/my_material.wgsl".into()
+    }
+    fn specialize(
+        _: &MaterialPipeline<Self>,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        let vertex_layout = layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            Mesh::ATTRIBUTE_UV_0.at_shader_location(1),
+            ATTRIBUTE_TEXTURE_INDEX.at_shader_location(2),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(3),
+        ])?;
+        descriptor.vertex.buffers = Vec::from([vertex_layout]);
+        Ok(())
+    }
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct MyMaterial2 {
+    #[texture(0)]
+    #[sampler(1)]
+    texture: Handle<Image>,
+}
+impl Material for MyMaterial2 {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/my_material2.wgsl".into()
+    }
 }
 
 trait GizmosExt {
