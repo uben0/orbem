@@ -1,7 +1,19 @@
 use super::octahedron;
 use bevy::{
+    asset::RenderAssetUsages,
+    image::{CompressedImageFormats, ImageSampler},
+    input::common_conditions::input_just_pressed,
+    pbr::{MaterialPipeline, MaterialPipelineKey},
     prelude::*,
-    render::mesh::{Indices, PrimitiveTopology},
+    render::{
+        mesh::{
+            Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology,
+            VertexFormat,
+        },
+        render_resource::{
+            AsBindGroup, RenderPipelineDescriptor, ShaderRef, SpecializedMeshPipelineError,
+        },
+    },
 };
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -56,6 +68,38 @@ pub struct Modifications {
     queue: Vec<Modify>,
 }
 
+#[derive(Component)]
+struct MeshReload;
+
+impl Modifications {
+    pub fn push(&mut self, modify: Modify) {
+        self.queue.push(modify);
+    }
+}
+
+impl Plugin for TerrainPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(MaterialPlugin::<TerrainMaterial>::default())
+            .add_systems(Startup, setup)
+            .add_systems(
+                Update,
+                (
+                    chunk_indexer,
+                    chunk_deloader,
+                    chunk_generation.before(chunk_meshing),
+                    chunk_need_mesh.before(chunk_meshing),
+                    apply_modifications.before(chunk_meshing),
+                    chunk_meshing,
+                    remove_meshes.run_if(input_just_pressed(KeyCode::KeyU)),
+                ),
+            )
+            .insert_resource(Terrain)
+            .insert_resource(Modifications { queue: Vec::new() })
+            .insert_resource(ChunksIndex {
+                chunks: HashMap::new(),
+            });
+    }
+}
 impl ChunksIndex {
     pub fn global_to_local(&self, global: IVec3) -> Option<(Entity, IVec3)> {
         let (chunk, local) = global_to_local(global);
@@ -82,37 +126,6 @@ impl ChunksIndex {
     //         local,
     //     ))
     // }
-}
-
-#[derive(Component)]
-struct MeshReload;
-
-impl Modifications {
-    pub fn push(&mut self, modify: Modify) {
-        self.queue.push(modify);
-    }
-}
-
-impl Plugin for TerrainPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup)
-            .add_systems(
-                Update,
-                (
-                    chunk_indexer,
-                    chunk_deloader,
-                    chunk_generation.before(chunk_meshing),
-                    chunk_need_mesh.before(chunk_meshing),
-                    apply_modifications.before(chunk_meshing),
-                    chunk_meshing,
-                ),
-            )
-            .insert_resource(Terrain)
-            .insert_resource(Modifications { queue: Vec::new() })
-            .insert_resource(ChunksIndex {
-                chunks: HashMap::new(),
-            });
-    }
 }
 
 impl ChunkBlocks {
@@ -249,7 +262,7 @@ fn chunk_deloader(
         {
             commands
                 .entity(entity)
-                .remove::<(Mesh3d, MeshMaterial3d<StandardMaterial>)>();
+                .remove::<(Mesh3d, MeshMaterial3d<TerrainMaterial>)>();
         }
     }
 }
@@ -376,6 +389,14 @@ fn chunk_need_mesh(
     }
 }
 
+fn remove_meshes(mut commands: Commands, meshed: Query<Entity, (With<Chunk>, With<Mesh3d>)>) {
+    for chunk in meshed {
+        commands
+            .entity(chunk)
+            .remove::<(Mesh3d, MeshMaterial3d<TerrainMaterial>)>();
+    }
+}
+
 fn chunk_meshing(
     not_meshed: Query<(Entity, &Chunk), With<MeshReload>>,
     with_blocks: Query<&ChunkBlocks>,
@@ -393,11 +414,13 @@ fn chunk_meshing(
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut indices = Vec::new();
+        let mut texture_uvs = Vec::new();
+        let mut texture_indices = Vec::new();
         for (&local, &_) in &neighborhood.zero.blocks {
             assert!(local.x >= 0);
             assert!(local.x < CHUNK_WIDTH);
             assert!(local.y >= 0);
-            assert!(local.y < CHUNK_WIDTH, "{}", local.y);
+            assert!(local.y < CHUNK_WIDTH);
             assert!(local.z >= 0);
             assert!(local.z < CHUNK_WIDTH);
             make_cube_mesh(
@@ -411,11 +434,21 @@ fn chunk_meshing(
                 &mut positions,
                 &mut normals,
                 &mut indices,
+                &mut texture_uvs,
+                &mut texture_indices,
             );
         }
+        assert_eq!(positions.len(), normals.len());
+        assert_eq!(positions.len(), texture_uvs.len());
+        assert_eq!(positions.len(), texture_indices.len());
+        assert_eq!(indices.len() % 6, 0);
+        assert_eq!(positions.len() % 4, 0);
+        assert_eq!(positions.len() / 4, indices.len() / 6);
         let mesh = Mesh::new(PrimitiveTopology::TriangleList, default())
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, texture_uvs)
+            .with_inserted_attribute(ATTRIBUTE_TEXTURE_INDEX, texture_indices)
             .with_inserted_indices(Indices::U32(indices));
         let mesh = meshes.add(mesh);
         commands
@@ -456,14 +489,34 @@ impl TerrainLoader {
 
 #[derive(Resource)]
 struct MeshAssets {
-    material: Handle<StandardMaterial>,
+    material: Handle<TerrainMaterial>,
 }
 
-fn setup(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
-    let material = materials.add(Color::srgb(0.0, 1.0, 0.0));
-    commands.insert_resource(MeshAssets { material });
+fn setup(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
+) {
+    commands.insert_resource(MeshAssets {
+        material: materials.add(TerrainMaterial {
+            texture: images.add(load_texture_atlas()),
+        }),
+    });
 }
-
+fn load_texture_atlas() -> Image {
+    let bytes = std::fs::read("assets/textures/blocks.png").unwrap();
+    let mut textures = Image::from_buffer(
+        &bytes,
+        bevy::image::ImageType::Format(ImageFormat::Png),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::nearest(),
+        RenderAssetUsages::default(),
+    )
+    .unwrap();
+    textures.reinterpret_stacked_2d_as_array(2);
+    textures
+}
 impl Terrain {
     fn elevation(&self, position: IVec2) -> i32 {
         (8.0 + 4.0 * noisy_bevy::simplex_noise_2d(0.05 * position.as_vec2())) as i32
@@ -516,7 +569,39 @@ pub fn global_to_local(global: IVec3) -> (IVec3, IVec3) {
     (global.div_euclid(width), global.rem_euclid(width))
 }
 
-#[inline]
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct TerrainMaterial {
+    #[texture(0, dimension = "2d_array")]
+    #[sampler(1)]
+    texture: Handle<Image>,
+}
+const ATTRIBUTE_TEXTURE_INDEX: MeshVertexAttribute =
+    MeshVertexAttribute::new("TextureIndex", 2760892297209218923, VertexFormat::Uint32);
+
+impl Material for TerrainMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/my_material.wgsl".into()
+    }
+    fn vertex_shader() -> ShaderRef {
+        "shaders/my_material.wgsl".into()
+    }
+    fn specialize(
+        _: &MaterialPipeline<Self>,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        let vertex_layout = layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            Mesh::ATTRIBUTE_UV_0.at_shader_location(1),
+            ATTRIBUTE_TEXTURE_INDEX.at_shader_location(2),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(3),
+        ])?;
+        descriptor.vertex.buffers = Vec::from([vertex_layout]);
+        Ok(())
+    }
+}
+
 fn make_cube_mesh(
     tr: Vec3,
     x_pos: bool,
@@ -528,6 +613,8 @@ fn make_cube_mesh(
     positions: &mut Vec<[f32; 3]>,
     normals: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
+    texture_uvs: &mut Vec<[f32; 2]>,
+    texture_indices: &mut Vec<u32>,
 ) {
     if x_pos {
         let index = positions.len() as u32;
@@ -546,6 +633,8 @@ fn make_cube_mesh(
             index + 2,
             index + 3,
         ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
     }
     if x_neg {
         let index = positions.len() as u32;
@@ -564,6 +653,8 @@ fn make_cube_mesh(
             index + 3,
             index + 2,
         ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
     }
     if y_pos {
         let index = positions.len() as u32;
@@ -582,6 +673,8 @@ fn make_cube_mesh(
             index + 3,
             index + 2,
         ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
     }
     if y_neg {
         let index = positions.len() as u32;
@@ -600,6 +693,8 @@ fn make_cube_mesh(
             index + 2,
             index + 3,
         ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
     }
     if z_pos {
         let index = positions.len() as u32;
@@ -618,6 +713,8 @@ fn make_cube_mesh(
             index + 2,
             index + 3,
         ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
     }
     if z_neg {
         let index = positions.len() as u32;
@@ -636,5 +733,7 @@ fn make_cube_mesh(
             index + 3,
             index + 2,
         ]);
+        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        texture_indices.extend([0; 4]);
     }
 }

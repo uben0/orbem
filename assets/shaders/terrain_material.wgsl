@@ -35,39 +35,26 @@ struct FragIn {
 
 @vertex
 fn vertex(vertex: VertexIn) -> VertexOut {
+    var output: VertexOut;
     let position = vec4<f32>(vertex.position, 1.0);
     let world_from_local = get_world_from_local(vertex.instance_index);
-    var output: VertexOut;
-    output.clip_position = mesh_position_local_to_clip(
-        world_from_local,
-        position,
-    );
+    output.clip_position = mesh_position_local_to_clip(world_from_local, position);
     output.uv = vertex.uv;
     output.texture_index = vertex.texture_index;
     output.normal = vertex.normal;
     output.world_position = mesh_position_local_to_world(world_from_local, position);
-    // output.world_position = position;
     return output;
 }
 
 @fragment
 fn fragment(frag: FragIn) -> @location(0) vec4<f32> {
-    let color = textureSample(my_texture, my_sampler, frag.uv, frag.texture_index);
-    let ones = vec3f(1.0, 1.0, 1.0);
-
     var pbr_input: PbrInput = pbr_input_new();
-    pbr_input.material.base_color = color;
+    pbr_input.material.base_color = textureSample(my_texture, my_sampler, frag.uv, frag.texture_index);
     pbr_input.world_position = frag.world_position;
     pbr_input.frag_coord = frag.clip_position;
     pbr_input.is_orthographic = false;
     pbr_input.world_normal = frag.normal;
     pbr_input.N = normalize(frag.normal);
     pbr_input.V = normalize(view.world_position.xyz - frag.world_position.xyz);
-    let color2 = apply_pbr_lighting(pbr_input);
-
-    let color3 = tone_mapping(color2, view.color_grading);
-    // return vec4f((pbr_input.V + ones) / 2.0, 1.0);
-    // return vec4f(fract(view.world_position.xyz / 4.0), 1.0);
-    // return vec4f(fract(frag.world_position.xyz / 4.0), 1.0);
-    return color3;
+    return tone_mapping(apply_pbr_lighting(pbr_input), view.color_grading);
 }
