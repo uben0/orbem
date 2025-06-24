@@ -580,10 +580,10 @@ const ATTRIBUTE_TEXTURE_INDEX: MeshVertexAttribute =
 
 impl Material for TerrainMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/my_material.wgsl".into()
+        "shaders/terrain_material.wgsl".into()
     }
     fn vertex_shader() -> ShaderRef {
-        "shaders/my_material.wgsl".into()
+        "shaders/terrain_material.wgsl".into()
     }
     fn specialize(
         _: &MaterialPipeline<Self>,
