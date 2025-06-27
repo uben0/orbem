@@ -2,27 +2,22 @@
 
 ## TODO
 
-- [x] understand trigger
-- [ ] inspect ui
+- [ ] terrain generation
+  - [x] don't generate all at once
+  - [ ] stone and dirt below
+  - [ ] ui to tweak generation live
+  - [ ] or use json file with hot reload
+  - [ ] water?
+- [x] inspect ui
 - [ ] textures
-  - [x] draw quad
-    - [x] custom frag shader
-    - [x] nearest interpolation
-    - [x] images in array
-    - [x] solve texture loading
-    - [x] custom mesh with texture index
-    - [ ] pbr shader
-      - [ ] issue: colors are washed
-      - [ ] compare with default
-- [ ] different blocks
+  - [ ] transparency
+- [x] different blocks
 - [ ] split in different crate for compile time
 - [x] physics
-  - [x] gizmos
-    - [x] second camera
-- [x] fix delay
-- [x] meshing by iterating on values
-- [x] capture mouse
+    - [ ] in water
+- [ ] de-capture mouse on escape
 - [x] place block
+  - [ ] prevent placing block if collides
 
 ## Links
 
@@ -32,7 +27,7 @@ Webgpu doc: https://webgpufundamentals.org/
 
 Bevy doc: https://taintedcoders.com/
 
-Pixel art: https://orama-interactive.itch.io/pixelorama
+Pixel art: https://www.oramainteractive.com/Pixelorama/
 
 ## Notes
 

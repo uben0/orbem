@@ -3188,6 +3188,8 @@ dependencies = [
  "bevy",
  "bevy_framepace",
  "noisy_bevy",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

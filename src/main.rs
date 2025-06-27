@@ -2,6 +2,7 @@ mod controller;
 mod octahedron;
 mod physics;
 mod ray_travel;
+mod spacial;
 mod swizzle;
 mod terrain;
 
@@ -89,7 +90,7 @@ fn setup(mut commands: Commands) {
     ));
     commands.spawn((
         Player,
-        TerrainLoader::new(64.0, 20.0),
+        TerrainLoader::new(128.0, 20.0),
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: 100.0f32.to_radians(),
@@ -195,6 +196,7 @@ fn axis_overlay(mut gizmos: Gizmos<AxisOverlay>, transform: Single<&Transform, W
 // #[derive(Component)]
 // struct ControlledPhysically;
 
+#[allow(dead_code)]
 fn current_chunk_highlight(player: Single<&Transform, With<Player>>, mut gizmos: Gizmos) {
     let global = player.translation.floor().as_ivec3();
     let (chunk, _) = terrain::global_to_local(global);

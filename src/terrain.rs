@@ -1,24 +1,21 @@
-use super::octahedron;
-use bevy::{
-    asset::RenderAssetUsages,
-    image::{CompressedImageFormats, ImageSampler},
-    input::common_conditions::input_just_pressed,
-    pbr::{MaterialPipeline, MaterialPipelineKey},
-    prelude::*,
-    render::{
-        mesh::{
-            Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology,
-            VertexFormat,
-        },
-        render_resource::{
-            AsBindGroup, RenderPipelineDescriptor, ShaderRef, SpecializedMeshPipelineError,
-        },
+mod generation;
+mod render;
+
+use crate::{
+    spacial::{Neighborhood, Sides},
+    terrain::{
+        generation::TerrainGenerator,
+        render::{TerrainMaterial, chunk_meshing, setup_render},
     },
 };
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    ops::RangeInclusive,
+
+use super::octahedron;
+use bevy::{
+    input::common_conditions::input_just_pressed,
+    platform::collections::{HashMap, hash_map::Entry},
+    prelude::*,
 };
+use std::ops::RangeInclusive;
 
 pub const CHUNK_WIDTH: i32 = 32;
 
@@ -46,6 +43,8 @@ pub enum Block {
     Air,
     Grass,
     Stone,
+    Dirt,
+    Sand,
 }
 
 /// Store terrain generation parameters
@@ -80,7 +79,7 @@ impl Modifications {
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<TerrainMaterial>::default())
-            .add_systems(Startup, setup)
+            .add_systems(Startup, setup_render)
             .add_systems(
                 Update,
                 (
@@ -91,8 +90,10 @@ impl Plugin for TerrainPlugin {
                     apply_modifications.before(chunk_meshing),
                     chunk_meshing,
                     remove_meshes.run_if(input_just_pressed(KeyCode::KeyU)),
+                    reload_generation_parameters.run_if(input_just_pressed(KeyCode::KeyI)),
                 ),
             )
+            .insert_resource(TerrainGenerator::load_from_file())
             .insert_resource(Terrain)
             .insert_resource(Modifications { queue: Vec::new() })
             .insert_resource(ChunksIndex {
@@ -144,14 +145,18 @@ impl ChunkBlocks {
     }
 }
 
-const NEIGHBORS: [IVec3; 6] = [
-    IVec3 { x: 1, y: 0, z: 0 },
-    IVec3 { x: -1, y: 0, z: 0 },
-    IVec3 { y: 1, x: 0, z: 0 },
-    IVec3 { y: -1, x: 0, z: 0 },
-    IVec3 { z: 1, x: 0, y: 0 },
-    IVec3 { z: -1, x: 0, y: 0 },
-];
+fn reload_generation_parameters(
+    mut commands: Commands,
+    mut parameters: ResMut<TerrainGenerator>,
+    chunks: Query<Entity, With<Chunk>>,
+) {
+    *parameters = TerrainGenerator::load_from_file();
+    for chunk in &chunks {
+        commands
+            .entity(chunk)
+            .remove::<(ChunkBlocks, Mesh3d, MeshMaterial3d<TerrainMaterial>)>();
+    }
+}
 
 fn apply_modifications(
     mut queue: ResMut<Modifications>,
@@ -173,7 +178,7 @@ fn apply_modifications(
                 }
                 blocks.remove(local);
 
-                for neighbor in NEIGHBORS {
+                for neighbor in Sides::AXIS {
                     let Some((neighbor, local)) = index.global_to_local(at + neighbor) else {
                         continue;
                     };
@@ -202,7 +207,7 @@ fn apply_modifications(
                 }
                 blocks.place(local, Block::Stone);
 
-                for neighbor in NEIGHBORS {
+                for neighbor in Sides::AXIS {
                     let Some((neighbor, local)) = index.global_to_local(at + neighbor) else {
                         continue;
                     };
@@ -268,81 +273,39 @@ fn chunk_deloader(
 }
 
 fn chunk_generation(
-    terrain: Res<Terrain>,
     loaders: Query<(&Transform, &TerrainLoader)>,
     chunks: Query<(Entity, &Chunk), Without<ChunkBlocks>>,
     mut commands: Commands,
+    generator: Res<TerrainGenerator>,
 ) {
-    for (entity, &Chunk { chunk: index }) in &chunks {
-        if loaders
+    // TODO: use the chunk wrapper for IVec3
+    let priority = |chunk| {
+        loaders
             .iter()
-            .any(|loader| loader.inside(Zone::Blocks, index))
-        {
-            commands.entity(entity).insert(terrain.gen_chunk(index));
-        }
+            .filter_map(|loader| loader.inside_priority(Zone::Blocks, chunk))
+            .min()
+    };
+    if let Some((entity, chunk, _)) = chunks
+        .iter()
+        .filter_map(|(entity, &Chunk { chunk })| Some((entity, chunk, priority(chunk)?)))
+        .min_by_key(|&(_, _, p)| p)
+    {
+        commands.entity(entity).insert(ChunkBlocks {
+            blocks: generator.generate(chunk),
+        });
     }
-}
-
-struct Neighborhood<T> {
-    zero: T,
-    x_pos: T,
-    x_neg: T,
-    y_pos: T,
-    y_neg: T,
-    z_pos: T,
-    z_neg: T,
-}
-impl From<IVec3> for Neighborhood<IVec3> {
-    fn from(value: IVec3) -> Self {
-        Self {
-            zero: value,
-            x_pos: value + IVec3::X,
-            x_neg: value - IVec3::X,
-            y_pos: value + IVec3::Y,
-            y_neg: value - IVec3::Y,
-            z_pos: value + IVec3::Z,
-            z_neg: value - IVec3::Z,
-        }
-    }
-}
-impl<T> Neighborhood<T> {
-    // fn map<U>(self, mut f: impl FnMut(T) -> U) -> Neighborhood<U> {
-    //     Neighborhood {
-    //         zero: f(self.zero),
-    //         x_pos: f(self.x_pos),
-    //         x_neg: f(self.x_neg),
-    //         y_pos: f(self.y_pos),
-    //         y_neg: f(self.y_neg),
-    //         z_pos: f(self.z_pos),
-    //         z_neg: f(self.z_neg),
+    // for (entity, &Chunk { chunk: index }) in &chunks {
+    //     if loaders
+    //         .iter()
+    //         .any(|loader| loader.inside(Zone::Blocks, index))
+    //     {
+    //         commands.entity(entity).insert(ChunkBlocks {
+    //             blocks: generate(index),
+    //         });
     //     }
     // }
-    fn as_array(&self) -> [&T; 7] {
-        [
-            &self.zero,
-            &self.x_pos,
-            &self.x_neg,
-            &self.y_pos,
-            &self.y_neg,
-            &self.z_pos,
-            &self.z_neg,
-        ]
-    }
-    fn all(&self, f: impl FnMut(&T) -> bool) -> bool {
-        self.as_array().into_iter().all(f)
-    }
-    fn try_map<U>(self, mut f: impl FnMut(T) -> Option<U>) -> Option<Neighborhood<U>> {
-        Some(Neighborhood {
-            zero: f(self.zero)?,
-            x_pos: f(self.x_pos)?,
-            x_neg: f(self.x_neg)?,
-            y_pos: f(self.y_pos)?,
-            y_neg: f(self.y_neg)?,
-            z_pos: f(self.z_pos)?,
-            z_neg: f(self.z_neg)?,
-        })
-    }
 }
+
 impl<'a> Neighborhood<&'a ChunkBlocks> {
     fn get(&self, relative: IVec3) -> bool {
         const CW: i32 = CHUNK_WIDTH;
@@ -397,75 +360,24 @@ fn remove_meshes(mut commands: Commands, meshed: Query<Entity, (With<Chunk>, Wit
     }
 }
 
-fn chunk_meshing(
-    not_meshed: Query<(Entity, &Chunk), With<MeshReload>>,
-    with_blocks: Query<&ChunkBlocks>,
-    index: Res<ChunksIndex>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    assets: Res<MeshAssets>,
-) {
-    for (entity, &Chunk { chunk }) in &not_meshed {
-        let Some(neighborhood) = Neighborhood::from(chunk)
-            .try_map(|chunk| with_blocks.get(*index.chunks.get(&chunk)?).ok())
-        else {
-            continue;
-        };
-        let mut positions = Vec::new();
-        let mut normals = Vec::new();
-        let mut indices = Vec::new();
-        let mut texture_uvs = Vec::new();
-        let mut texture_indices = Vec::new();
-        for (&local, &_) in &neighborhood.zero.blocks {
-            assert!(local.x >= 0);
-            assert!(local.x < CHUNK_WIDTH);
-            assert!(local.y >= 0);
-            assert!(local.y < CHUNK_WIDTH);
-            assert!(local.z >= 0);
-            assert!(local.z < CHUNK_WIDTH);
-            make_cube_mesh(
-                local.as_vec3(),
-                !neighborhood.get(local + IVec3::X),
-                !neighborhood.get(local - IVec3::X),
-                !neighborhood.get(local + IVec3::Y),
-                !neighborhood.get(local - IVec3::Y),
-                !neighborhood.get(local + IVec3::Z),
-                !neighborhood.get(local - IVec3::Z),
-                &mut positions,
-                &mut normals,
-                &mut indices,
-                &mut texture_uvs,
-                &mut texture_indices,
-            );
-        }
-        assert_eq!(positions.len(), normals.len());
-        assert_eq!(positions.len(), texture_uvs.len());
-        assert_eq!(positions.len(), texture_indices.len());
-        assert_eq!(indices.len() % 6, 0);
-        assert_eq!(positions.len() % 4, 0);
-        assert_eq!(positions.len() / 4, indices.len() / 6);
-        let mesh = Mesh::new(PrimitiveTopology::TriangleList, default())
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, texture_uvs)
-            .with_inserted_attribute(ATTRIBUTE_TEXTURE_INDEX, texture_indices)
-            .with_inserted_indices(Indices::U32(indices));
-        let mesh = meshes.add(mesh);
-        commands
-            .entity(entity)
-            .remove::<MeshReload>()
-            .insert((Mesh3d(mesh), MeshMaterial3d(assets.material.clone())));
-    }
-}
-
 trait TerrainLoaderExt {
     fn inside(self, zone: Zone, chunk: IVec3) -> bool;
+    fn inside_priority(self, zone: Zone, chunk: IVec3) -> Option<u32>;
     fn outside(self, zone: Zone, chunk: IVec3) -> bool;
 }
 impl<'a> TerrainLoaderExt for (&'a Transform, &'a TerrainLoader) {
     fn inside(self, zone: Zone, chunk: IVec3) -> bool {
         let (tr, loader) = self;
         zone.distance(chunk, tr.translation) <= loader.radius
+    }
+    fn inside_priority(self, zone: Zone, chunk: IVec3) -> Option<u32> {
+        let (tr, loader) = self;
+        let distance = zone.distance(chunk, tr.translation);
+        if distance <= loader.radius {
+            Some(distance as u32)
+        } else {
+            None
+        }
     }
 
     fn outside(self, zone: Zone, chunk: IVec3) -> bool {
@@ -487,61 +399,18 @@ impl TerrainLoader {
     }
 }
 
-#[derive(Resource)]
-struct MeshAssets {
-    material: Handle<TerrainMaterial>,
-}
-
-fn setup(
-    mut commands: Commands,
-    mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<TerrainMaterial>>,
-) {
-    commands.insert_resource(MeshAssets {
-        material: materials.add(TerrainMaterial {
-            texture: images.add(load_texture_atlas()),
-        }),
-    });
-}
-fn load_texture_atlas() -> Image {
-    let bytes = std::fs::read("assets/textures/blocks.png").unwrap();
-    let mut textures = Image::from_buffer(
-        &bytes,
-        bevy::image::ImageType::Format(ImageFormat::Png),
-        CompressedImageFormats::NONE,
-        true,
-        ImageSampler::nearest(),
-        RenderAssetUsages::default(),
-    )
-    .unwrap();
-    textures.reinterpret_stacked_2d_as_array(2);
-    textures
-}
-impl Terrain {
-    fn elevation(&self, position: IVec2) -> i32 {
-        (8.0 + 4.0 * noisy_bevy::simplex_noise_2d(0.05 * position.as_vec2())) as i32
-    }
-    fn gen_chunk(&self, chunk: IVec3) -> ChunkBlocks {
-        let mut blocks = HashMap::new();
-        for x in 0..CHUNK_WIDTH {
-            for z in 0..CHUNK_WIDTH {
-                let position = CHUNK_WIDTH * chunk.xz() + IVec2::new(x, z);
-                let elevation_relative = self.elevation(position) - chunk.y * CHUNK_WIDTH;
-                for y in 0..elevation_relative.min(CHUNK_WIDTH) {
-                    blocks.insert(IVec3 { x, y, z }, Block::Grass);
-                }
-            }
-        }
-        ChunkBlocks { blocks }
-    }
-}
-
+/// Area around a player where the terrain should be loaded
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Zone {
+    /// In this zone, a chunk should have its blocks generated and loaded
     Blocks,
+    /// In the zone, a chunk should render
     Mesh,
 }
 impl Zone {
+    /// Zones are ordered by dependency
+    ///
+    /// A chunk in the Mesh zone should already be in the Blocks zone
     const fn level(self) -> i32 {
         match self {
             Zone::Blocks => 1,
@@ -569,171 +438,47 @@ pub fn global_to_local(global: IVec3) -> (IVec3, IVec3) {
     (global.div_euclid(width), global.rem_euclid(width))
 }
 
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct TerrainMaterial {
-    #[texture(0, dimension = "2d_array")]
-    #[sampler(1)]
-    texture: Handle<Image>,
-}
-const ATTRIBUTE_TEXTURE_INDEX: MeshVertexAttribute =
-    MeshVertexAttribute::new("TextureIndex", 2760892297209218923, VertexFormat::Uint32);
-
-impl Material for TerrainMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/terrain_material.wgsl".into()
-    }
-    fn vertex_shader() -> ShaderRef {
-        "shaders/terrain_material.wgsl".into()
-    }
-    fn specialize(
-        _: &MaterialPipeline<Self>,
-        descriptor: &mut RenderPipelineDescriptor,
-        layout: &MeshVertexBufferLayoutRef,
-        _: MaterialPipelineKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout = layout.0.get_layout(&[
-            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
-            Mesh::ATTRIBUTE_UV_0.at_shader_location(1),
-            ATTRIBUTE_TEXTURE_INDEX.at_shader_location(2),
-            Mesh::ATTRIBUTE_NORMAL.at_shader_location(3),
-        ])?;
-        descriptor.vertex.buffers = Vec::from([vertex_layout]);
-        Ok(())
-    }
-}
-
-fn make_cube_mesh(
-    tr: Vec3,
-    x_pos: bool,
-    x_neg: bool,
-    y_pos: bool,
-    y_neg: bool,
-    z_pos: bool,
-    z_neg: bool,
-    positions: &mut Vec<[f32; 3]>,
-    normals: &mut Vec<[f32; 3]>,
-    indices: &mut Vec<u32>,
-    texture_uvs: &mut Vec<[f32; 2]>,
-    texture_indices: &mut Vec<u32>,
-) {
-    if x_pos {
-        let index = positions.len() as u32;
-        positions.extend([
-            [tr.x + 1.0, tr.y + 0.0, tr.z + 0.0],
-            [tr.x + 1.0, tr.y + 0.0, tr.z + 1.0],
-            [tr.x + 1.0, tr.y + 1.0, tr.z + 0.0],
-            [tr.x + 1.0, tr.y + 1.0, tr.z + 1.0],
-        ]);
-        normals.extend([[1.0, 0.0, 0.0]; 4]);
-        indices.extend([
-            index + 0,
-            index + 2,
-            index + 1,
-            index + 1,
-            index + 2,
-            index + 3,
-        ]);
-        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
-        texture_indices.extend([0; 4]);
-    }
-    if x_neg {
-        let index = positions.len() as u32;
-        positions.extend([
-            [tr.x + 0.0, tr.y + 0.0, tr.z + 0.0],
-            [tr.x + 0.0, tr.y + 0.0, tr.z + 1.0],
-            [tr.x + 0.0, tr.y + 1.0, tr.z + 0.0],
-            [tr.x + 0.0, tr.y + 1.0, tr.z + 1.0],
-        ]);
-        normals.extend([[-1.0, 0.0, 0.0]; 4]);
-        indices.extend([
-            index + 0,
-            index + 1,
-            index + 2,
-            index + 1,
-            index + 3,
-            index + 2,
-        ]);
-        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
-        texture_indices.extend([0; 4]);
-    }
-    if y_pos {
-        let index = positions.len() as u32;
-        positions.extend([
-            [tr.x + 0.0, tr.y + 1.0, tr.z + 0.0],
-            [tr.x + 0.0, tr.y + 1.0, tr.z + 1.0],
-            [tr.x + 1.0, tr.y + 1.0, tr.z + 0.0],
-            [tr.x + 1.0, tr.y + 1.0, tr.z + 1.0],
-        ]);
-        normals.extend([[0.0, 1.0, 0.0]; 4]);
-        indices.extend([
-            index + 0,
-            index + 1,
-            index + 2,
-            index + 1,
-            index + 3,
-            index + 2,
-        ]);
-        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
-        texture_indices.extend([0; 4]);
-    }
-    if y_neg {
-        let index = positions.len() as u32;
-        positions.extend([
-            [tr.x + 0.0, tr.y + 0.0, tr.z + 0.0],
-            [tr.x + 0.0, tr.y + 0.0, tr.z + 1.0],
-            [tr.x + 1.0, tr.y + 0.0, tr.z + 0.0],
-            [tr.x + 1.0, tr.y + 0.0, tr.z + 1.0],
-        ]);
-        normals.extend([[0.0, -1.0, 0.0]; 4]);
-        indices.extend([
-            index + 0,
-            index + 2,
-            index + 1,
-            index + 1,
-            index + 2,
-            index + 3,
-        ]);
-        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
-        texture_indices.extend([0; 4]);
-    }
-    if z_pos {
-        let index = positions.len() as u32;
-        positions.extend([
-            [tr.x + 0.0, tr.y + 0.0, tr.z + 1.0],
-            [tr.x + 0.0, tr.y + 1.0, tr.z + 1.0],
-            [tr.x + 1.0, tr.y + 0.0, tr.z + 1.0],
-            [tr.x + 1.0, tr.y + 1.0, tr.z + 1.0],
-        ]);
-        normals.extend([[0.0, 0.0, 1.0]; 4]);
-        indices.extend([
-            index + 0,
-            index + 2,
-            index + 1,
-            index + 1,
-            index + 2,
-            index + 3,
-        ]);
-        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
-        texture_indices.extend([0; 4]);
-    }
-    if z_neg {
-        let index = positions.len() as u32;
-        positions.extend([
-            [tr.x + 0.0, tr.y + 0.0, tr.z + 0.0],
-            [tr.x + 0.0, tr.y + 1.0, tr.z + 0.0],
-            [tr.x + 1.0, tr.y + 0.0, tr.z + 0.0],
-            [tr.x + 1.0, tr.y + 1.0, tr.z + 0.0],
-        ]);
-        normals.extend([[0.0, 0.0, -1.0]; 4]);
-        indices.extend([
-            index + 0,
-            index + 1,
-            index + 2,
-            index + 1,
-            index + 3,
-            index + 2,
-        ]);
-        texture_uvs.extend([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
-        texture_indices.extend([0; 4]);
+impl Block {
+    fn textures(self) -> Option<Sides<u32>> {
+        // 0 stone
+        // 1 dirt
+        // 2 grass side
+        // 3 grass top
+        // 4 sand
+        match self {
+            Block::Air => None,
+            Block::Grass => Some(Sides {
+                x_pos: 2,
+                x_neg: 2,
+                y_pos: 3,
+                y_neg: 1,
+                z_pos: 2,
+                z_neg: 2,
+            }),
+            Block::Stone => Some(Sides {
+                x_pos: 0,
+                x_neg: 0,
+                y_pos: 0,
+                y_neg: 0,
+                z_pos: 0,
+                z_neg: 0,
+            }),
+            Block::Dirt => Some(Sides {
+                x_pos: 1,
+                x_neg: 1,
+                y_pos: 1,
+                y_neg: 1,
+                z_pos: 1,
+                z_neg: 1,
+            }),
+            Block::Sand => Some(Sides {
+                x_pos: 4,
+                x_neg: 4,
+                y_pos: 4,
+                y_neg: 4,
+                z_pos: 4,
+                z_neg: 4,
+            }),
+        }
     }
 }
